@@ -1,0 +1,16 @@
+streamlit
+PyPDF2
+python-docx
+google-generativeai          
+openai            
+pydantic
+psycopg2-binary
+stripe
+reportlab
+plotly
+python-dotenv
+phonenumbers
+pycountry
+
+
+resend

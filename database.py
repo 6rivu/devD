@@ -1,0 +1,1087 @@
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import json
+from datetime import datetime, timedelta
+import hashlib
+import secrets
+from werkzeug.security import generate_password_hash, check_password_hash
+
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "127.0.0.1"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "cvolvepro"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", ""),
+        connect_timeout=10,
+        application_name="cvolvepro"
+    )
+
+def init_db():
+    """Initialize database tables"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+
+    # =========================================================
+    # BUSINESS USERS TABLE
+    # =========================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS business_users (
+            id SERIAL PRIMARY KEY,
+
+            company_name VARCHAR(255) NOT NULL,
+            owner_name VARCHAR(255) NOT NULL,
+
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+
+            business_type VARCHAR(100),
+
+            plan_name VARCHAR(100),
+            credits INTEGER DEFAULT 0,
+
+            subscription_duration VARCHAR(50),
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP,
+
+            is_active BOOLEAN DEFAULT TRUE
+        )
+    """)
+
+    # =========================================================
+    # BUSINESS SUBSCRIPTIONS
+    # =========================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS business_subscriptions (
+            id SERIAL PRIMARY KEY,
+
+            business_email VARCHAR(255),
+
+            plan_name VARCHAR(100),
+            credits INTEGER,
+
+            amount DECIMAL(10,2),
+
+            duration VARCHAR(50),
+
+            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            end_date TIMESTAMP,
+
+            status VARCHAR(50) DEFAULT 'active'
+        )
+    """)
+
+    # =========================================================
+    # BUSINESS CREDIT USAGE
+    # =========================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS business_credit_usage (
+            id SERIAL PRIMARY KEY,
+
+            business_email VARCHAR(255),
+
+            feature VARCHAR(100),
+
+            credits_used INTEGER,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Users table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        phone VARCHAR(20),
+        auth_provider VARCHAR(50) NOT NULL,
+        password_hash VARCHAR(255),
+        is_verified BOOLEAN DEFAULT FALSE,
+        verification_token VARCHAR(64),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_login TIMESTAMP,
+        credits INTEGER DEFAULT 5,
+        total_cvs_generated INTEGER DEFAULT 0,
+        avg_ats_score FLOAT DEFAULT 0.0,
+        otp_expires_at TIMESTAMP
+        );
+
+    """)
+    
+    # Subscriptions table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            plan VARCHAR(50) NOT NULL,
+            status VARCHAR(20) DEFAULT 'active',
+            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            end_date TIMESTAMP,
+            stripe_subscription_id VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # CV generations table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cv_generations (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            job_description TEXT,
+            original_resume TEXT,
+            generated_cv TEXT,
+            template_used VARCHAR(50),
+            ats_score INTEGER,
+            target_match INTEGER,
+            processing_time FLOAT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # User sessions table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            session_data JSONB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Needed so ON CONFLICT (user_email) works in save_user_session
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_user_sessions_email ON user_sessions(user_email)")    
+    
+    # Payments table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            amount DECIMAL(10, 2) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending',
+            stripe_payment_id VARCHAR(255),
+            credits_purchased INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    # Enforce idempotency when a Stripe ID exists (allow multiple NULLs)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_stripe_id
+        ON payments(stripe_payment_id) WHERE stripe_payment_id IS NOT NULL
+    """)
+    
+    # Discount codes table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS discount_codes (
+            id SERIAL PRIMARY KEY,
+            code VARCHAR(50) UNIQUE NOT NULL,
+            discount_percent INTEGER NOT NULL,
+            max_uses INTEGER DEFAULT 1,
+            current_uses INTEGER DEFAULT 0,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_special_discounts (
+            id SERIAL PRIMARY KEY,
+
+            email VARCHAR(255) NOT NULL,
+
+            plan_name VARCHAR(255) NOT NULL,
+
+            discount_percent INTEGER NOT NULL,
+
+            is_active BOOLEAN DEFAULT TRUE,
+
+            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            end_date TIMESTAMP,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # user coupon usage table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_coupon_usage (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            coupon_code VARCHAR(50),
+            used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Credit usage table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS credit_usage (
+            id SERIAL PRIMARY KEY,
+            user_email VARCHAR(255) REFERENCES users(email),
+            feature VARCHAR(50) NOT NULL,   -- 'CV', 'CL', 'Interview QA', 'ATS'
+            credits INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Monthly credit cycle anchor (starts when a plan is purchased)
+    cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS credit_cycle_start TIMESTAMP
+    """)
+
+
+
+
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_user_data(email):
+    """Get user data by email"""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("""
+        SELECT * FROM users WHERE email = %s
+    """, (email,))
+    
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    return dict(user) if user else None
+
+def create_user(email, name, auth_provider, password_hash=None):
+    """Create new user"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO users (email, name, auth_provider, password_hash, last_login)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (email) DO UPDATE SET
+        last_login = EXCLUDED.last_login
+        RETURNING *
+    """, (email, name, auth_provider, password_hash, datetime.now()))
+    
+    user = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return user
+
+
+def create_business_user(
+    company_name,
+    owner_name,
+    email,
+    password_hash,
+    plan_name
+):
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    plans = {
+        "Corporate Starter": (500, "3 months"),
+        "Corporate Growth": (1000, "3 months"),
+        "Corporate Pro": (2500, "6 months"),
+        "Corporate Plus": (5000, "6 months"),
+        "Corporate Advanced": (7500, "1 year"),
+        "Corporate Enterprise": (10000, "1 year")
+    }
+
+    credits, duration = plans[plan_name]
+
+    cursor.execute("""
+        INSERT INTO business_users (
+            company_name,
+            owner_name,
+            email,
+            password_hash,
+            plan_name,
+            credits,
+            subscription_duration
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
+    """, (
+        company_name,
+        owner_name,
+        email,
+        password_hash,
+        plan_name,
+        credits,
+        duration
+    ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+
+def get_business_user(email):
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    cursor.execute("""
+        SELECT * FROM business_users
+        WHERE email=%s
+    """, (email,))
+
+    user = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return dict(user) if user else None
+
+def authenticate_business_user(email, password):
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            SELECT * FROM business_users
+            WHERE email = %s
+        """, (email.strip().lower(),))
+
+        user = cur.fetchone()
+
+        if not user:
+            return None
+
+        if check_password_hash(
+            user["password_hash"],
+            password
+        ):
+            return user
+
+        return None
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+def update_user_credits(email, credits):
+    """Increment credits (works even if credits is NULL)"""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users 
+           SET credits = COALESCE(credits, 0) + %s 
+         WHERE email=%s
+    """, (credits, email))
+    conn.commit(); cur.close(); conn.close()
+
+
+def get_user_credits(email):
+    """Get user's current credits (auto-resets cycle if expired)."""
+    try:
+        reset_credits_if_expired(email)
+    except Exception:
+        pass
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(credits, 0) FROM users WHERE email=%s", (email,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    return int(row[0]) if row else 0
+
+
+
+def save_cv_generation(user_email, job_description, original_resume, generated_cv, template_used, ats_score, target_match, processing_time):
+    """Save CV generation record"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO cv_generations (user_email, job_description, original_resume, generated_cv, template_used, ats_score, target_match, processing_time)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """, (user_email, job_description, original_resume, generated_cv, template_used, ats_score, target_match, processing_time))
+    
+    # Update user stats
+    cursor.execute("""
+        UPDATE users SET 
+        total_cvs_generated = total_cvs_generated + 1,
+        avg_ats_score = (
+            SELECT AVG(ats_score) FROM cv_generations WHERE user_email = %s
+        )
+        WHERE email = %s
+    """, (user_email, user_email))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def save_user_session(user_email, session_data):
+    """Save user session data for auto-save"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO user_sessions (user_email, session_data)
+        VALUES (%s, %s)
+        ON CONFLICT (user_email) DO UPDATE SET
+        session_data = EXCLUDED.session_data,
+        updated_at = CURRENT_TIMESTAMP
+    """, (user_email, json.dumps(session_data)))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_user_session(user_email):
+    """Get user session data"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT session_data FROM user_sessions WHERE user_email = %s
+    """, (user_email,))
+
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    return json.loads(result[0]) if result else {}
+
+
+def save_payment(user_email, amount, payment_type, stripe_payment_id, credits_purchased=0):
+    """Save payment record"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO payments (user_email, amount, type, stripe_payment_id, credits_purchased)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (user_email, amount, payment_type, stripe_payment_id, credits_purchased))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def create_discount_code(code, discount_percent, max_uses=1, expires_at=None):
+    """Create discount code"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO discount_codes (code, discount_percent, max_uses, expires_at)
+        VALUES (%s, %s, %s, %s)
+    """, (code, discount_percent, max_uses, expires_at))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def seed_discount_codes():
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO discount_codes (code, discount_percent, max_uses)
+        VALUES ('ANALYTICSWITHANAND', 5, 1000)
+        ON CONFLICT (code) DO NOTHING
+    """)
+    cur.execute("""
+        INSERT INTO discount_codes (code, discount_percent, max_uses)
+        VALUES ('IWD20', 20, 1000)
+        ON CONFLICT (code) DO NOTHING
+    """)
+    cur.execute("""
+    INSERT INTO discount_codes (code, discount_percent, max_uses)
+    VALUES ('PREMIUM599', 0, 1000)
+    ON CONFLICT (code) DO NOTHING
+    """)
+    cur.execute("""
+    INSERT INTO discount_codes (code, discount_percent, max_uses)
+    VALUES ('CVOLVE40', 40, 1000)
+    ON CONFLICT (code) DO NOTHING
+    """)
+
+    cur.execute("""
+    INSERT INTO discount_codes (code, discount_percent, max_uses)
+    VALUES ('HFPI10', 10, 1000)
+    ON CONFLICT (code) DO NOTHING
+    """)
+
+    cur.execute("""
+    INSERT INTO discount_codes (code, discount_percent, max_uses)
+    VALUES ('PROSAVITRI', 0, 1000)
+    ON CONFLICT (code) DO NOTHING
+    """)
+    conn.commit(); cur.close(); conn.close()
+
+
+def validate_discount_code(code):
+    """Validate discount code"""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cursor.execute("""
+        SELECT * FROM discount_codes 
+        WHERE code = %s 
+        AND current_uses < max_uses 
+        AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+    """, (code,))
+    
+    discount = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    return dict(discount) if discount else None
+
+def use_discount_code(code):
+    """Use discount code"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE discount_codes 
+        SET current_uses = current_uses + 1
+        WHERE code = %s
+    """, (code,))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def get_user_special_discount(email, plan_name):
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT discount_percent
+        FROM user_special_discounts
+        WHERE lower(email)=lower(%s)
+          AND plan_name=%s
+          AND is_active=TRUE
+          AND (
+                end_date IS NULL
+                OR end_date > CURRENT_TIMESTAMP
+          )
+        LIMIT 1
+    """, (email, plan_name))
+
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    return int(row["discount_percent"]) if row else 0
+
+def register_user(name, email, phone, password_hash, token):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    email = email.strip().lower()
+
+    # 1️⃣ Create user with 10 FREE credits
+    cursor.execute("""
+        INSERT INTO users
+            (name, email, phone, auth_provider, password_hash,
+             verification_token, credit_cycle_start, credits)
+        VALUES
+            (%s, %s, %s, 'email', %s,
+             %s, CURRENT_TIMESTAMP, 10)
+        RETURNING email
+    """, (name, email, phone, password_hash, token))
+
+    user_email = cursor.fetchone()[0]
+
+    # 2️⃣ Create FREE subscription for 30 days (ONLY ONCE)
+    cursor.execute("""
+        INSERT INTO subscriptions
+            (user_email, plan, status, start_date, end_date)
+        SELECT
+            %s, 'Free', 'active', CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP + INTERVAL '30 days'
+        WHERE NOT EXISTS (
+            SELECT 1 FROM subscriptions WHERE user_email = %s
+        )
+    """, (user_email, user_email))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return user_email
+
+
+def verify_user_email(token):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE users SET is_verified = TRUE, verification_token = NULL 
+        WHERE verification_token = %s
+        RETURNING email
+    """, (token,))
+    
+    result = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return result[0] if result else None
+
+def record_user_coupon_usage(user_email, coupon_code):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO user_coupon_usage (user_email, coupon_code)
+        VALUES (%s, %s)
+    """, (user_email, coupon_code))
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+
+def payment_exists(stripe_payment_id: str) -> bool:
+    """Return True if this Stripe session/payment was already recorded."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM payments WHERE stripe_payment_id=%s LIMIT 1", (stripe_payment_id,))
+    ok = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return ok
+
+def set_email_otp(email: str, otp: str, ttl_minutes: int = 10) -> bool:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Safe interval cast avoids SQL formatting issues
+    cur.execute("""
+        UPDATE users
+           SET verification_token=%s,
+               otp_expires_at = CURRENT_TIMESTAMP + (%s || ' minutes')::interval
+         WHERE email=%s
+    """, (otp, str(ttl_minutes), email))
+    ok = cur.rowcount > 0
+    conn.commit(); cur.close(); conn.close()
+    return ok
+
+def verify_email_otp(email: str, otp: str) -> bool:
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE users
+        SET is_verified = TRUE,
+            verification_token = NULL,
+            otp_expires_at = NULL
+        WHERE email=%s
+          AND verification_token=%s
+          AND otp_expires_at > CURRENT_TIMESTAMP
+        RETURNING email
+    """, (email, otp))
+    ok = cur.fetchone() is not None
+    conn.commit(); cur.close(); conn.close()
+    return ok
+
+def record_credit_usage(user_email: str, feature: str, credits: int):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO credit_usage (user_email, feature, credits)
+        VALUES (%s, %s, %s)
+    """, (user_email, feature, credits))
+    conn.commit()
+    cur.close(); conn.close()
+
+def reset_credits_if_expired(email: str) -> bool:
+    """
+    Initialize a new user's credit cycle without wiping free credits,
+    and reset to 0 only when a 1-month cycle has actually expired.
+    Returns True if any change was applied.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # Case 1: First-time init → set cycle start, keep existing credits (defaults to 5)
+    cur.execute("""
+        UPDATE users
+           SET credit_cycle_start = CURRENT_TIMESTAMP,
+               credits = COALESCE(credits, 5)
+         WHERE email = %s
+           AND credit_cycle_start IS NULL
+        RETURNING 1
+    """, (email,))
+    did = cur.fetchone() is not None
+
+    if not did:
+        # Case 2: Cycle expired → zero credits and start new cycle
+        cur.execute("""
+            UPDATE users
+               SET credits = 0,
+                   credit_cycle_start = CURRENT_TIMESTAMP
+             WHERE email = %s
+               AND credit_cycle_start IS NOT NULL
+               AND credit_cycle_start + INTERVAL '1 month' <= CURRENT_TIMESTAMP
+            RETURNING 1
+        """, (email,))
+        did = cur.fetchone() is not None
+
+    conn.commit(); cur.close(); conn.close()
+    return did
+
+# =========================================================
+# ===================== JOBSQA HELPERS ====================
+# =========================================================
+
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+from psycopg2.extras import RealDictCursor
+
+def jobsqa_get_user_by_email(email):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute(
+            "SELECT * FROM jobsqa_users WHERE email = %s",
+            (email,)
+        )
+        return cur.fetchone()   # now a dict
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+def jobsqa_create_user(email, password_hash):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # 1️⃣ Create user and get ID
+        cur.execute("""
+            INSERT INTO jobsqa_users (email, password_hash, is_verified)
+            VALUES (%s, %s, FALSE)
+            RETURNING id
+        """, (email.strip().lower(), password_hash))
+
+        user_id = cur.fetchone()[0]
+
+        # 2️⃣ Give 8 free credits (ONLY ONCE)
+        cur.execute("""
+            INSERT INTO jobsqa_credits (user_id, credits)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO NOTHING
+        """, (user_id, 8))
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+
+
+from psycopg2.extras import RealDictCursor
+from werkzeug.security import check_password_hash
+
+def jobsqa_authenticate(email: str, password: str):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT id, email, password_hash, is_verified
+        FROM jobsqa_users
+        WHERE email = %s
+    """, (email.strip().lower(),))
+
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not user:
+        return None
+
+    if not user["is_verified"]:
+        # IMPORTANT: distinct signal
+        raise ValueError("EMAIL_NOT_VERIFIED")
+
+    if not check_password_hash(user["password_hash"], password):
+        return None
+
+    return user
+
+
+
+
+def jobsqa_get_credits(user_id: int) -> int:
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT credits, expires_at
+        FROM jobsqa_credits
+        WHERE user_id = %s
+    """, (user_id,))
+    row = cur.fetchone()
+
+    if not row:
+        return 0
+
+    if row["expires_at"] and row["expires_at"] < datetime.utcnow():
+        cur.execute("""
+            UPDATE jobsqa_credits
+            SET credits = 0
+            WHERE user_id = %s
+        """, (user_id,))
+        conn.commit()
+        return 0
+
+    return int(row["credits"])
+
+
+
+
+def jobsqa_update_credits(user_id: int, delta: int, action: str):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE jobsqa_credits
+            SET credits = credits + %s, updated_at = NOW()
+            WHERE user_id = %s
+        """, (delta, user_id))
+
+        cur.execute("""
+            INSERT INTO jobsqa_credit_logs (user_id, action, credits_change)
+            VALUES (%s, %s, %s)
+        """, (user_id, action, delta))
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+def jobsqa_save_interview(user_id: int, resume_filename: str, jd: str, qa: str):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO jobsqa_interview_history
+            (user_id, resume_filename, job_description, interview_qa)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, resume_filename, jd, qa))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+def jobsqa_set_email_otp(email, otp):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE jobsqa_users
+            SET email_otp = %s,
+                otp_created_at = NOW()
+            WHERE email = %s
+        """, (otp, email))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def jobsqa_verify_email_otp(email, otp):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT email_otp
+            FROM jobsqa_users
+            WHERE email = %s
+              AND otp_created_at > NOW() - INTERVAL '10 minutes'
+        """, (email,))
+        row = cur.fetchone()
+
+        if not row or row[0] != otp:
+            return False
+
+        cur.execute("""
+            UPDATE jobsqa_users
+            SET is_verified = TRUE,
+                email_otp = NULL
+            WHERE email = %s
+        """, (email,))
+        conn.commit()
+        return True
+    finally:
+        cur.close()
+        conn.close()
+
+
+# =========================================================
+# BUSINESS CREDIT HELPERS
+# =========================================================
+
+def get_business_credits(email):
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+
+        cur.execute("""
+            SELECT credits
+            FROM business_users
+            WHERE email=%s
+        """, (email.lower(),))
+
+        row = cur.fetchone()
+
+        if row:
+            return row["credits"]
+
+        return 0
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def update_business_credits(email, credits):
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("""
+            UPDATE business_users
+            SET credits=%s
+            WHERE email=%s
+        """, (
+            credits,
+            email.lower()
+        ))
+
+        conn.commit()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def activate_business_plan(
+    email,
+    plan_name,
+    credits,
+    expiry
+):
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("""
+            UPDATE business_users
+            SET
+                current_plan=%s,
+                credits=credits + %s,
+                plan_expiry=%s
+            WHERE email=%s
+        """, (
+            plan_name,
+            credits,
+            expiry,
+            email.lower()
+        ))
+
+        conn.commit()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+# =========================================================
+# BUSINESS PAYMENT HELPERS
+# =========================================================
+
+def save_business_payment(
+    user_email,
+    amount,
+    payment_type,
+    stripe_session_id,
+    credits_purchased=0
+):
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("""
+            INSERT INTO business_payments (
+                user_email,
+                amount,
+                payment_type,
+                stripe_session_id,
+                credits_purchased
+            )
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            user_email,
+            amount,
+            payment_type,
+            stripe_session_id,
+            credits_purchased
+        ))
+
+        conn.commit()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_business_plan_info(email):
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+
+        cur.execute("""
+            SELECT
+                current_plan,
+                plan_expiry,
+                credits
+            FROM business_users
+            WHERE email=%s
+        """, (email.lower(),))
+
+        return cur.fetchone()
+
+    finally:
+        cur.close()
+        conn.close()
+
+
