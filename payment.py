@@ -4,7 +4,10 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 import stripe
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python 3.10 fallback (in requirements.txt)
 
 from database import (
     get_db_connection,
@@ -20,11 +23,14 @@ from database import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load secrets
-with open("/opt/cvolvepro/CVOLVE-PRO/.streamlit/secrets.toml", "rb") as f:
-    secrets = tomllib.load(f)
+# Load secrets (VPS path if present; falls back to environment variables locally)
+secrets = {}
+_SECRETS_PATH = "/opt/cvolvepro/CVOLVE-PRO/.streamlit/secrets.toml"
+if os.path.exists(_SECRETS_PATH):
+    with open(_SECRETS_PATH, "rb") as f:
+        secrets = tomllib.load(f)
 
-stripe.api_key = secrets["STRIPE_SECRET_KEY"]
+stripe.api_key = secrets.get("STRIPE_SECRET_KEY") or os.getenv("STRIPE_SECRET_KEY")
 
 
 

@@ -1,0 +1,108 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name cvolvepro.com www.cvolvepro.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name www.cvolvepro.com;
+    ssl_certificate /etc/letsencrypt/live/cvolvepro.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/cvolvepro.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    return 301 https://cvolvepro.com$request_uri;
+
+}
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name cvolvepro.com;
+    ssl_certificate /etc/letsencrypt/live/cvolvepro.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/cvolvepro.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Static landing page at /
+    root  /var/www/cvolvepro/public;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+location /app/ {
+        proxy_pass http://127.0.0.1:8502;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_read_timeout 600s;
+     }
+
+
+location = /app { return 301 /app/; }
+
+
+# FastAPI (uvicorn) API at /api/ -> port 8000
+    # IMPORTANT: proxy_pass **must end with a trailing slash** to forward the path correctly
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 300s;
+    }
+    location = /api { return 301 /api/; }
+
+# ----------------------------------------------
+    # ORBYNEAI STATIC PAGE (/orbyneai)
+    # ----------------------------------------------
+    location /orbyneai/ {
+        alias /var/www/orbyneai/;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /orbyneai {
+        return 301 /orbyneai/;
+    }
+
+    # ----------------------------------------------
+    # ORBYNEAI BACKEND API (/orbyneai/api)
+    # ----------------------------------------------
+    location /orbyneai/api/ {
+        proxy_pass http://127.0.0.1:5002/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 300s;
+    }
+
+    # ----------------------------------------------
+    # HEALTH CHECK
+    # ----------------------------------------------
+
+    # optional /health
+    location /health {
+        add_header Content-Type text/plain;
+        return 200 "ok";
+    }
+}
+

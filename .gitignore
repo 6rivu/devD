@@ -1,0 +1,28 @@
+# Secrets — never commit credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+# Recovery notes/exports may contain live prod keys — never commit
+# docs/*.pdf
+# docs/**/secrets*
+# docs/
+# scripts/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Legacy / local artifacts
+users.db
+
+# Recovered-from-VPS working area (see docs/VPS_RECOVERY.md)
+# vps_recovery/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
