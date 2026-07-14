@@ -460,7 +460,14 @@ def get_user_session(user_email):
     cursor.close()
     conn.close()
 
-    return json.loads(result[0]) if result else {}
+    if not result or result[0] is None:
+        return {}
+    data = result[0]
+    # jsonb columns are auto-decoded to dict/list by psycopg2; a text column (or
+    # legacy rows) come back as a JSON string that still needs parsing.
+    if isinstance(data, (dict, list)):
+        return data
+    return json.loads(data)
 
 
 def save_alignment_answers(user_email, jd_hash, gaps, answers):
