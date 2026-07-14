@@ -12,6 +12,17 @@ from dotenv import load_dotenv
 from streamlit import session_state as st_session
 import openai
 
+def _get_session_ai_model():
+    """Safely get ai_model from Streamlit session state without warnings when running outside Streamlit."""
+    try:
+        import threading
+        t = threading.current_thread()
+        if hasattr(t, "streamlit_script_run_ctx") and getattr(t, "streamlit_script_run_ctx") is not None:
+            return st_session.get("ai_model")
+    except Exception:
+        pass
+    return None
+
 from utils import get_gemini_response
     
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -20,6 +31,164 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Initialize Gemini client
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
+
+
+# =============================================================================
+# Phase 2 — CV ↔ JD alignment: truthfulness guardrail + gap analysis
+# See docs/CV_JD_ALIGNMENT_PLAN.md. The guardrail replaces the old prompts that
+# explicitly instructed the model to fabricate experience.
+# =============================================================================
+TRUTHFULNESS_GUARDRAIL = (
+    "HARD RULE — TRUTHFULNESS (highest priority, overrides any other instruction below):\n"
+    "Use ONLY facts present in the candidate's résumé and in the VERIFIED EXPERIENCE block "
+    "below (if present). Do NOT invent, fabricate, exaggerate, or assume any employer, job "
+    "title, date, degree, skill, tool, certification, project, or metric that is not "
+    "explicitly supported by those sources. You MAY rephrase real experience using the job "
+    "description's terminology and surface genuinely-held skills; you may NOT add experience "
+    "the candidate does not have. If evidence for a JD requirement is missing, OMIT it rather "
+    "than invent it. Never present placeholder or example numbers as real achievements."
+)
+
+
+def build_verified_context_block(extra_context) -> str:
+    """Format the candidate's verified follow-up answers for prompt injection.
+
+    Accepts a preformatted string or a {area: answer} dict. Returns "" when empty
+    so prompts are byte-identical to the no-alignment path when there are no answers.
+    """
+    if not extra_context:
+        return ""
+    if isinstance(extra_context, dict):
+        lines = [
+            f"- {area}: {str(ans).strip()}"
+            for area, ans in extra_context.items()
+            if ans and str(ans).strip()
+        ]
+        body = "\n".join(lines)
+    else:
+        body = str(extra_context).strip()
+    if not body:
+        return ""
+    return (
+        "VERIFIED EXPERIENCE (provided by the candidate in follow-up answers; treat as true "
+        "and use it, but still do not invent anything beyond it):\n" + body
+    )
+
+
+def hash_jd(job_description) -> str:
+    """Stable short hash of a JD (whitespace/case-insensitive) — keys stored answers."""
+    import hashlib
+    norm = re.sub(r"\s+", " ", (job_description or "").strip().lower())
+    return hashlib.sha256(norm.encode()).hexdigest()[:16]
+
+
+def parse_gap_analysis(raw_text, max_gaps: int = 5) -> dict:
+    """Parse gap-analysis model output into a safe dict. NEVER raises.
+
+    Returns {"sufficient": bool, "overall_match": int|None,
+             "gaps": [{"id","area","why","question","example"}]}.
+    Fails OPEN (sufficient=True, no gaps) on any parse problem so a bad model
+    response can never block generation.
+    """
+    fallback = {"sufficient": True, "overall_match": None, "gaps": []}
+    if not raw_text or not str(raw_text).strip():
+        return fallback
+    text = str(raw_text).strip()
+    if text.startswith("```"):                       # strip ```json ... ``` fences
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    if not text.startswith("{"):                     # pull first {...} out of prose
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            text = m.group(0)
+    try:
+        data = json.loads(text)
+    except Exception:
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+
+    gaps = []
+    for i, g in enumerate(data.get("gaps") or []):
+        if not isinstance(g, dict):
+            continue
+        question = str(g.get("question") or "").strip()
+        if not question:                             # a gap with no question is useless
+            continue
+        area = str(g.get("area") or "").strip() or question
+        gaps.append({
+            "id": str(g.get("id") or f"gap_{i + 1}").strip(),
+            "area": area,
+            "why": str(g.get("why") or "").strip(),
+            "question": question,
+            "example": str(g.get("example") or "").strip(),
+        })
+    gaps = gaps[:max_gaps]
+
+    try:
+        overall = int(data.get("overall_match")) if data.get("overall_match") is not None else None
+    except (TypeError, ValueError):
+        overall = None
+
+    # No actionable gaps → treat as sufficient regardless of the model's flag.
+    sufficient = True if not gaps else bool(data.get("sufficient", False))
+    return {"sufficient": sufficient, "overall_match": overall, "gaps": gaps}
+
+
+def analyze_cv_jd_gaps(resume_text, job_description, language: str = "English", max_gaps: int = 5) -> dict:
+    """One LLM call → structured gap analysis (see parse_gap_analysis for shape).
+
+    Fail-open: any error returns sufficient=True so generation is never blocked.
+    Cost: exactly +1 model call; callers should memoize per (resume, JD) per session.
+    """
+    if not resume_text or not job_description:
+        return {"sufficient": True, "overall_match": None, "gaps": []}
+
+    prompt = f"""
+    You are a career coach comparing a candidate's résumé against a target job description.
+    Identify AT MOST {max_gaps} areas the JD clearly requires but the résumé shows no or weak
+    evidence for. For each, write ONE clear question the candidate can answer to supply real
+    evidence, plus one short concrete EXAMPLE answer so they understand what's expected.
+
+    Return STRICT JSON ONLY (no prose, no code fences) in exactly this shape:
+    {{
+      "sufficient": <true if the résumé already has enough evidence and needs no questions>,
+      "overall_match": <integer 0-100 estimate>,
+      "gaps": [
+        {{"id": "<short_slug>", "area": "<missing area>", "why": "<why it is a gap>",
+          "question": "<one clear question>", "example": "<one concrete example answer>"}}
+      ]
+    }}
+    If the résumé already covers the JD well, return "sufficient": true and an empty "gaps" list.
+    Write the "question" and "example" text in {language}.
+
+    RÉSUMÉ:
+    {resume_text}
+
+    JOB DESCRIPTION:
+    {job_description}
+    """
+    try:
+        if _get_session_ai_model() == "openai":
+            response = openai.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {"role": "system", "content": "You output only strict JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+            )
+            raw = response.choices[0].message.content
+        else:
+            response = model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.1, "response_mime_type": "application/json"},
+            )
+            raw = response.text if (response and getattr(response, "text", None)) else ""
+    except Exception:
+        return {"sufficient": True, "overall_match": None, "gaps": []}
+    return parse_gap_analysis(raw, max_gaps=max_gaps)
+
 
 class CVOptimization(BaseModel):
     """CV optimization response model"""
@@ -59,6 +228,7 @@ def generate_cv(
     keyword_matching,
     language="English",
     model_choice="premium",
+    extra_context="",
     **kwargs
 ):
     """Generate optimized CV using Gemini AI
@@ -124,359 +294,12 @@ def generate_cv(
     Use native {language} formatting for dates, section names, and style.
     """
     
-    # Direct prompt for CV output only
-    prompt = f"""
-    You are a professional resume writer and an expert in ATS optimization and role alignment.
-
-    Your job is to:
-    1. Parse the candidate's resume and extract **real experience**.
-    2. Analyze the job description to extract **critical keywords, tools, titles, skills, certifications, and action verbs**.
-    3. Identify mismatches between the resume and JD (especially job titles like "Data Analyst" vs. "Data Engineer").
-    4. Reframe the resume to match the **job role in the JD**, especially:
-    - Rewrite bullet points to highlight experience adjust Real experience with the JD's Skills.
-    - Emphasize **tools, platforms, pipelines, databases, programming, and architecture** relevant to the target role.
-    - Add **measurable outcomes and business impact** wherever possible.
-    EXECUTE UNIVERSAL CV GENERATION: Analyze JD, extract 45 ATS skills, generate 100-word summary, create 22 JD-aligned roles across all companies and ensure the entire content fits within 2 A4 pages. Use only exact wording from the JD. No paraphrasing. No personal data. Avoid repetition. Ensure perfect ATS compatibility, and quantifiable outcomes in 50%+ of roles.
-    Steps:
-    Extract 45 unique ATS-compliant skills from the JD using exact wording. Limit each skill to 1-2 words. Categorize into: 15 Technical Skills, 15 Soft Skills, 15 Job-Specific Competencies.
-    Write a 100-word summary starting with “Applying for [exact job title]”. Include [X]+ years experience, 15+ ATS keywords, quantifiable outcomes, global exposure, and action verbs. No synonyms.
-    Create 22 roles across all companies in resume: . Each role must be 10-14 words, use 1-2 ATS skills, end with a full stop. 50%+ roles must have quantifiable metrics. Avoid repeating skills across roles. Ensure progressive responsibility.
-
-
-    Fabricate work experience to better align with the JD with quantitive ATS keywords.
-    Do not change the job title
-    Just adjust the ATS keywords, skills inside the roles and responsibility.
-
-    Your goal is to improve this resume to achieve a **{target_match}% ATS match** with the JD.
-
-    Generate the resume in this exact plain text format with these headers (Headers in Bold), make sure name and details are in centre:
-
-    NAME
-    Phone No | Email | Address
-    # Make sure NAME and contact details are at the top, centered, and not under any section
-
-    PROFESSIONAL SUMMARY:
-    
-
-    KEY SKILLS:
-    Skill 1, Skill 2.....
-
-    WORK EXPERIENCE:(keep the dates in the same format as given in resume)
-    Company | Role | Dates
-    • Bullet 1
-    • Bullet 2
-
-    EDUCATION:
-    • Degree | Institution | Year(keep the dates in the same format as given in resume)
-
-    PROJECTS:(if any)
-    Project Name 1
-    • Bullet 1
-    • Bullet 2
-    
-    Project Name 2
-    • Bullet 1
-    • Bullet 2
-
-    CERTIFICATIONS:(If any)
-
-    Resume Content:
-    {resume_text}
-
-    Job Description:
-    {job_description}
-    """
-
-    prompt_2 = f"""
-    You are an expert ATS resume writer with deep knowledge of applicant tracking systems, keyword optimization, and professional resume formatting.
-
-    GOAL:
-    Rewrite the candidate's resume for an ATS match score of {target_match if 'target_match' in locals() else '90'}% or higher with the given job description, while maintaining authenticity, readability, and strict ATS compliance.
-
-    INPUT DATA:
-    Resume Text:
-    {resume_text if 'resume_text' in locals() else '[RESUME TEXT MISSING]'}
-
-    Job Description:
-    {job_description if 'job_description' in locals() else '[JOB DESCRIPTION MISSING]'}
-
-    Target Match:
-    {target_match if 'target_match' in locals() else '85'}%
-
-    ### **CRITICAL ATS RULES**
-    ✔ Standard fonts: Calibri (11pt)
-    ✔ Margins: 0.5-1 inch; single spacing
-    ✔ Avoid tables, text boxes, graphics, headers/footers
-    ✔ Use standard bullet points (•)
-    ✔ No columns, images, or unnecessary formatting
-
-
-    OUTPUT FORMAT
-    
-    [Candidate Name]  
-    Phone | Email | City, State  
-    
-
-    PROFESSIONAL SUMMMARY:
-    100-120 words starting with:  
-    "Accomplished [job title] professional applying for [exact JD title]..."  
-    Include 3-4 JD keywords naturally.
-
-    KEY SKILLS:  
-    45-50 keywords from JD (technical + soft skills), comma-separated.
-
-    WORK EXPERIENCE:
-    [Company Name] | [Original Job Title] | [MM/YYYY - MM/YYYY]
-    All original companies included, reverse chronological.  
-    **Do NOT invent new companies.**
-
-    **Bullet Distribution Rules:**  
-    **If 0-5 yrs experience:**  
-        • First company: **6 bullets** (4 original + 2 fabricated from JD)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 20 max**  
-    **If 5+ yrs experience:**  
-        • Company 1: **7 bullets** (4 original + 3 fabricated from JD)  
-        • Company 2: **6 bullets** (4 original + 2 fabricated)  
-        • Company 3: **6 bullets** (4 original + 2 fabricated)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 26 max**
-
-    **Each bullet:**  
-    • 10-14 words  
-    • At least 60% bullets contain quantifiable metrics (%, $, numbers, timeframes)  
-    • End with a period.
-
-    EDUCATION:  
-    Degree | Institution | Year  
-
-    PROJECTS:  
-    (Pick them as it is)
-
-    CERTIFICATIONS:
-    (if any)
-
-
-    ### **KEYWORD STRATEGY**
-    ✔ Extract 45-50 JD keywords and spread naturally across summary, skills, and experience   
-    ✔ Prioritize exact JD matches over synonyms  
-
-
-    ### **POST-CHECKLIST (Apply before finalizing)**
-    □ All original company names and existing job titles preserved  
-    □ Fabricated roles align with career progression and JD  
-    □ Bullet distribution rule applied (20 bullets for ≤5 yrs, 26 for >5 yrs)  
-    □ Quantified achievements in 60%+ bullets  
-    □ No keyword stuffing  
-    □ Professional tone and grammar verified  
-    □ Page length: 2 pages  
-    """
-
-    prompt_3 = f"""
-    You are a professional resume writer and an expert in ATS optimization and role alignment.
-
-    Automated JD Keyword Embedding
-    “Extract the top 20-25 JD keywords and naturally embed them in the summary, skills, and experience sections without keyword stuffing.”
-
-    Title-Aligned Summary + Portfolio Digest
-    “Rewrite the summary (≤100 words) to:
-
-    Name the exact job title from the JD.
-
-    Weave in 3-4 JD skills.
-
-    Add a concise portfolio/publication highlight with quantifiable impact (one clause).”
-
-    Achievement-Driven JD Mirroring
-    “Transform responsibilities into action-verb, metric-led bullets (≤14 words). Mirror key JD duties (e.g., design/facilitation/logistics/evaluation for L&D or role-specific equivalents). Ensure ≥50% bullets show measurable outcomes.”
-
-    Role-Specific Principles Injection
-    “Add 1-2 bullets per relevant role that explicitly reference core domain principles from the JD (e.g., ‘adult learning principles’ for L&D; adapt to each domain).”
-
-    Collaboration & Stakeholder Evidence
-    “Insert at least one bullet per role demonstrating cross-functional collaboration using JD language (e.g., partnered with HR/ops/managers/stakeholders) and outcome.”
-
-    Portfolio Link Placement
-    “Place one short portfolio link in the header or summary only (≤100 characters description). Make it clearly labeled and clickable. Do not repeat links inside experience bullets.”
-
-    Dynamic Content Balancing
-    “When portfolio or JD keywords expand content, auto-condense elsewhere: prioritize the last 8–10 years, reduce older roles to 1–3 bullets, remove repetition, and keep total length within two sides.”
-
-    Your job is to:
-    1. Parse the candidate's resume and extract **real experience**.
-    2. Analyze the job description to extract **critical keywords, tools, titles, skills, certifications, and action verbs**.
-    3. Identify mismatches between the resume and JD (especially job titles like "Data Analyst" vs. "Data Engineer").
-    4. Reframe the resume to match the **job role in the JD**, especially:
-    - Rewrite bullet points to highlight experience adjust Real experience with the JD's Skills.
-    - Emphasize **tools, platforms, pipelines, databases, programming, and architecture** relevant to the target role.
-    - Add **measurable outcomes and business impact** wherever possible.
-    EXECUTE UNIVERSAL CV GENERATION: Analyze JD, extract 45 ATS skills, generate 100-word summary, create 26 JD-aligned roles across all companies and ensure the entire content fits within 2 A4 pages. Use only exact wording from the JD. No paraphrasing. No personal data. Avoid repetition. Ensure perfect ATS compatibility, and quantifiable outcomes in 50%+ of roles.
-    Steps:
-    Extract 45 unique ATS-compliant skills from the JD using exact wording. Limit each skill to 1-2 words. Categorize into: 15 Technical Skills, 15 Soft Skills, 15 Job-Specific Competencies.
-    Write a 100-word summary starting with “Applying for [exact job title]”. Include [X]+ years experience, 15+ ATS keywords, quantifiable outcomes, global exposure, and action verbs. No synonyms.
-    Create 26 roles across all companies in resume: . Each role must be 10-14 words, use 1-2 ATS skills, end with a full stop. 50%+ roles must have quantifiable metrics. Avoid repeating skills across roles. Ensure progressive responsibility.
-
-
-    Fabricate work experience to better align with the JD with quantitive ATS keywords.
-    Do not change the job title & 26 Work Experience Bullet points only.
-    Just adjust the ATS keywords, skills inside the roles and responsibility.
-
-    Your goal is to improve this resume to achieve a **{target_match}% ATS match** with the JD.
-
-    Generate the resume in this exact plain text format with these headers (Headers in Bold), make sure name and details are in centre:
-
-    NAME
-    Phone No | Email | Address
-    Portfolio Link
-    # Make sure NAME and contact details are at the top, centered, and not under any section
-
-    PROFESSIONAL SUMMARY:
-    
-
-    KEY SKILLS:
-    Skill 1, Skill 2.....
-
-    WORK EXPERIENCE:(keep the dates in the same format as given in resume)
-    Company | Role | Dates
-    • Bullet 1
-    • Bullet 2
-
-    EDUCATION:
-    • Degree | Institution | Year(keep the dates in the same format as given in resume)
-
-    PROJECTS:(if any)
-    Project Name 1
-    • Bullet 1
-    • Bullet 2
-    
-    Project Name 2
-    • Bullet 1
-    • Bullet 2
-
-    CERTIFICATIONS:(If any)
-
-    Resume Content:
-    {resume_text}
-
-    Job Description:
-    {job_description}
-
-    IMPORTANT: Output ONLY the final resume content. Do NOT include any analysis, metadata, explanations, extraction lists, counts, or notes such as "ATS Skill Extraction", "Technical Skills:", or "(Resume is within 2 pages...)". Return plain resume only.
-    """
-
-
-    prompt_4 = f"""
-    You are a professional resume writer and an expert in ATS optimization and role alignment.
-
-    Automated JD Keyword Embedding
-    “Extract the top 20-25 JD keywords and naturally embed them in the summary, skills, and experience sections without keyword stuffing.”
-
-    Title-Aligned Summary + Portfolio Digest
-    “Rewrite the summary (≤100 words) to:
-
-    Name the exact job title from the JD.
-
-    Weave in 3-4 JD skills.
-
-    Add a concise portfolio/publication highlight with quantifiable impact (one clause).”
-
-    Achievement-Driven JD Mirroring
-    “Transform responsibilities into action-verb, metric-led bullets (≤14 words). Mirror key JD duties (e.g., design/facilitation/logistics/evaluation for L&D or role-specific equivalents). Ensure ≥50% bullets show measurable outcomes.”
-
-    Role-Specific Principles Injection
-    “Add 1-2 bullets per relevant role that explicitly reference core domain principles from the JD (e.g., ‘adult learning principles’ for L&D; adapt to each domain).”
-
-    Collaboration & Stakeholder Evidence
-    “Insert at least one bullet per role demonstrating cross-functional collaboration using JD language (e.g., partnered with HR/ops/managers/stakeholders) and outcome.”
-
-    Portfolio Link Placement
-    “Place one short portfolio link in the header or summary only (≤100 characters description). Make it clearly labeled and clickable. Do not repeat links inside experience bullets.”
-
-    Dynamic Content Balancing
-    “When portfolio or JD keywords expand content, auto-condense elsewhere: prioritize the last 8–10 years, reduce older roles to 1–3 bullets, remove repetition, and keep total length within two sides.”
-
-    Your job is to:
-    1. Parse the candidate's resume and extract **real experience**.
-    2. Analyze the job description to extract **critical keywords, tools, titles, skills, certifications, and action verbs**.
-    3. Identify mismatches between the resume and JD (especially job titles like "Data Analyst" vs. "Data Engineer").
-    4. Reframe the resume to match the **job role in the JD**, especially:
-    - Rewrite bullet points to highlight experience adjust Real experience with the JD's Skills.
-    - Emphasize **tools, platforms, pipelines, databases, programming, and architecture** relevant to the target role.
-    - Add **measurable outcomes and business impact** wherever possible.
-    EXECUTE UNIVERSAL CV GENERATION: Analyze JD, extract 45 ATS skills, generate 100-word summary, create 26 JD-aligned roles across all companies and ensure the entire content fits within 2 A4 pages. Use only exact wording from the JD. No paraphrasing. No personal data. Avoid repetition. Ensure perfect ATS compatibility, and quantifiable outcomes in 50%+ of roles.
-    Steps:
-    Extract 45 unique ATS-compliant skills from the JD using exact wording. Limit each skill to 1-2 words. Categorize into: 15 Technical Skills, 15 Soft Skills, 15 Job-Specific Competencies.
-    Write a 100-word summary starting with “Applying for [exact job title]”. Include [X]+ years experience, 15+ ATS keywords, quantifiable outcomes, global exposure, and action verbs. No synonyms.
-    Create 26 roles across all companies in resume: . Each role must be 10-14 words, use 1-2 ATS skills, end with a full stop. 50%+ roles must have quantifiable metrics. Avoid repeating skills across roles. Ensure progressive responsibility.
-
-
-    Fabricate work experience to better align with the JD with quantitive ATS keywords.
-    Do not change the job title & 26 Work Experience Bullet points only.
-    Just adjust the ATS keywords, skills inside the roles and responsibility.
-
-    Your goal is to improve this resume to achieve a **{target_match}% ATS match** with the JD.
-    Total Roles between 26-30.
-
-    Generate the resume in this exact plain text format with these headers (Headers in Bold), make sure name and details are in centre:
-
-    NAME
-    Phone No | Email | Address
-    Portfolio Link
-    # Make sure NAME and contact details are at the top, centered, and not under any section
-
-    PROFESSIONAL SUMMARY:
-    
-
-    KEY SKILLS:
-    Skill 1, Skill 2.....
-
-    WORK EXPERIENCE:
-    [Company Name] | [Original Job Title] | [MM/YYYY - MM/YYYY]
-    All original companies included, reverse chronological.  
-    **Do NOT invent new companies.**
-
-    **Bullet Distribution Rules:**  
-    **If 0-5 yrs experience:**  
-        • First company: **6 bullets** (4 original + 2 fabricated from JD)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 20 max**  
-    **If 5+ yrs experience:**  
-        • Company 1: **7 bullets** (4 original + 3 fabricated from JD)  
-        • Company 2: **6 bullets** (4 original + 2 fabricated)  
-        • Company 3: **6 bullets** (4 original + 2 fabricated)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 26 max**
-
-    **Each bullet:**  
-    • 10-14 words  
-    • At least 60% bullets contain quantifiable metrics (%, $, numbers, timeframes)  
-    • End with a period.
-
-    EDUCATION:
-    • Degree | Institution | Year(keep the dates in the same format as given in resume)
-
-    PROJECTS:(if any)
-    Project Name 1
-    • Bullet 1
-    • Bullet 2
-    
-    Project Name 2
-    • Bullet 1
-    • Bullet 2
-
-    CERTIFICATIONS:(If any)
-
-    Resume Content:
-    {resume_text}
-
-    Job Description:
-    {job_description}
-
-    IMPORTANT: Output ONLY the final resume content. Do NOT include any analysis, metadata, explanations, extraction lists, counts, or notes such as "ATS Skill Extraction", "Technical Skills:", or "(Resume is within 2 pages...)". Return plain resume only.
-    """
-
+    verified_block = build_verified_context_block(extra_context)
     prompt_5 = f"""
     {language_instruction}
+
+    {TRUTHFULNESS_GUARDRAIL}
+
     You are a professional resume writer and an expert in ATS optimization and role alignment.
 
         # --- NEW: language instruction used in prompts ---
@@ -694,15 +517,18 @@ def generate_cv(
     Steps:
     Extract 45 unique ATS-compliant skills from the JD using exact wording. Limit each skill to 1-2 words. Categorize into: 15 Technical Skills, 15 Soft Skills, 15 Job-Specific Competencies.
     Write a 100-word summary starting with “Applying for [exact job title]”. Include [X]+ years experience, 15+ ATS keywords, quantifiable outcomes, global exposure, and action verbs. No synonyms.
-    Create 26 roles across all companies in resume: . Each role must be 10-14 words, use 1-2 ATS skills, end with a full stop. 50%+ roles must have quantifiable metrics. Avoid repeating skills across roles. Ensure progressive responsibility.
+    For each REAL role already in the résumé, rewrite its bullets: 10-14 words each, using 1-2
+    ATS skills, ending with a full stop. Surface quantifiable outcomes ONLY where the résumé
+    supports them. Avoid repeating skills across bullets. Do not add roles or companies that are
+    not in the résumé.
 
+    Do NOT invent or fabricate any experience. Keep every job title, employer, and date exactly
+    as in the résumé. Rephrase the candidate's REAL responsibilities using the JD's terminology
+    and surface genuinely-held skills; never add duties, skills, or achievements the résumé (or
+    the verified answers below) do not support.
 
-    Fabricate work experience to better align with the JD with quantitive ATS keywords.
-    Do not change the job title & 26 Work Experience Bullet points only.
-    Just adjust the ATS keywords, skills inside the roles and responsibility.
-
-    Your goal is to improve this resume to achieve a **{target_match}% ATS match** with the JD.
-    Total Roles between 26-30.
+    Your goal is to improve this resume to achieve as high an honest ATS match as possible with
+    the JD (target **{target_match}%**), WITHOUT inventing anything.
 
     Generate the resume in this exact plain text format with these headers (Headers in Bold), make sure name and details are in centre:
 
@@ -722,21 +548,16 @@ def generate_cv(
     All original companies included, reverse chronological.  
     **Do NOT invent new companies.**
 
-    **Bullet Distribution Rules:**  
-    **If 0-5 yrs experience:**  
-        • First company: **6 bullets** (4 original + 2 fabricated from JD)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 20 max**  
-    **If 5+ yrs experience:**  
-        • Company 1: **7 bullets** (4 original + 3 fabricated from JD)  
-        • Company 2: **6 bullets** (4 original + 2 fabricated)  
-        • Company 3: **6 bullets** (4 original + 2 fabricated)  
-        • Remaining companies: distribute original bullets in decreasing relevance  
-        • **Total bullets = 26 max**
+    **Bullet Distribution Rules (use ONLY the candidate's real experience):**
+        • Weight bullets toward the most recent and most JD-relevant roles.
+        • Every bullet must be grounded in the résumé (or the verified answers) — rephrase real
+          duties in JD language; do NOT add bullets for experience that is not supported.
+        • Total bullets = 26 max.
 
-    **Each bullet:**  
-    • 10-14 words  
-    • At least 60% bullets contain quantifiable metrics (%, $, numbers, timeframes)  
+    **Each bullet:**
+    • 10-14 words
+    • Include quantifiable metrics ONLY where the résumé/verified answers actually provide them —
+      never invent numbers.
     • End with a period.
 
     EDUCATION:
@@ -756,6 +577,8 @@ def generate_cv(
     Resume Content:
     {resume_text}
 
+    {verified_block}
+
     Job Description:
     {job_description}
 
@@ -765,7 +588,7 @@ def generate_cv(
     
     try:
         # ✅ OpenAI Flow
-        if st_session.get("ai_model") == "openai":
+        if _get_session_ai_model() == "openai":
             response = openai.chat.completions.create(
                 model="gpt-4.1",
                 messages=[
@@ -853,8 +676,9 @@ def generate_cv(
     except Exception as e:
         raise Exception(f"Failed to generate CV: {str(e)}")
 
-def generate_cover_letter(resume_text, job_description, language="English"):
+def generate_cover_letter(resume_text, job_description, language="English", extra_context=""):
     """Generate cover letter using Gemini AI"""
+    verified_block = build_verified_context_block(extra_context)
 
 
     language_instruction = f"""
@@ -901,7 +725,11 @@ def generate_cover_letter(resume_text, job_description, language="English"):
     prompt_2 = f"""
     You are an expert ATS-optimized cover letter writer.
     {language_instruction}
-    
+
+    {TRUTHFULNESS_GUARDRAIL}
+
+    {verified_block}
+
     1. Alignment & Conciseness Prompt
     “Generate a cover letter tightly aligned with the provided job description. Mention the exact job title, reference 2–3 JD responsibilities, and avoid repetition by summarizing key points once. Keep length to ≤ one A4 page.”
 
@@ -964,7 +792,7 @@ def generate_cover_letter(resume_text, job_description, language="English"):
     """
 
     try:
-        if st_session.get("ai_model") == "openai":
+        if _get_session_ai_model() == "openai":
             response = openai.chat.completions.create(
                 model="gpt-4.1",
                 messages=[
@@ -1064,7 +892,7 @@ def analyze_cv_ats_score(cv_content, job_description):
     """
     
     try:
-        if st_session.get("ai_model") == "openai":
+        if _get_session_ai_model() == "openai":
             # ✅ GPT-based analysis
             response = openai.chat.completions.create(
                 model="gpt-4.1",
@@ -1143,10 +971,15 @@ def enhance_action_verbs(content, intensity="High"):
     # For now, return the content as-is
     return content
 
-def generate_interview_qa(resume_text, job_description):
+def generate_interview_qa(resume_text, job_description, extra_context=""):
     """Generate interview Q&A using Gemini AI"""
+    verified_block = build_verified_context_block(extra_context)
     prompt = f"""
     You are “Ultra-Strict JD Full-Coverage Practice Pack (Non-Interactive)”.
+
+    {TRUTHFULNESS_GUARDRAIL}
+
+    {verified_block}
 
 
 
@@ -1214,7 +1047,7 @@ def generate_interview_qa(resume_text, job_description):
     """
 
     try:
-        if st_session.get("ai_model") == "openai":
+        if _get_session_ai_model() == "openai":
             response = openai.chat.completions.create(
                 model="gpt-5",
                 messages=[

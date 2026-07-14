@@ -463,6 +463,32 @@ def get_user_session(user_email):
     return json.loads(result[0]) if result else {}
 
 
+def save_alignment_answers(user_email, jd_hash, gaps, answers):
+    """Phase 2 CV↔JD alignment: persist follow-up answers in the user_sessions JSON blob,
+    namespaced by JD hash so the same verified answers enrich CV, cover letter, and interview
+    prep for that JD. Read-modify-write to preserve other keys in the blob.
+
+    NOTE (UI wiring): the auto-save path (app.py) writes the whole blob wholesale — when wired,
+    it must merge rather than overwrite, or store alignment inside the same auto_save dict, so
+    these answers aren't clobbered.
+    """
+    session = get_user_session(user_email) or {}
+    alignment = session.get("alignment") or {}
+    alignment[jd_hash] = {
+        "gaps": gaps or [],
+        "answers": {k: v for k, v in (answers or {}).items() if v and str(v).strip()},
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    session["alignment"] = alignment
+    save_user_session(user_email, session)
+
+
+def get_alignment_answers(user_email, jd_hash):
+    """Return {'gaps':[...], 'answers':{...}, 'updated_at':...} for a JD hash, or {} if none."""
+    session = get_user_session(user_email) or {}
+    return (session.get("alignment") or {}).get(jd_hash, {})
+
+
 def save_payment(user_email, amount, payment_type, stripe_payment_id, credits_purchased=0):
     """Save payment record"""
     conn = get_db_connection()

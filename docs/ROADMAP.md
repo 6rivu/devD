@@ -92,6 +92,10 @@ of question count. **New deps:** none.
 **Goal:** stop the generator from inventing unsupported experience; ask the user targeted
 questions when the CV lacks evidence for the JD.
 
+> Detailed build plan: [CV_JD_ALIGNMENT_PLAN.md](CV_JD_ALIGNMENT_PLAN.md). **Note:** the
+> active generation prompt currently instructs the model to *fabricate* experience — Phase 2
+> must remediate that in addition to adding the alignment flow.
+
 | Client ask | v1 implementation |
 |---|---|
 | Compare CV vs JD | One Gemini "gap analysis" call → JSON: `sufficient: bool`, list of gaps |
@@ -111,6 +115,8 @@ results gate whether questions appear. **New deps:** none.
 ## Phase 1 — Job aggregator v1
 
 **Goal:** compliant job search — client explicitly forbids illegal scraping.
+
+> Detailed build plan: [JOB_AGGREGATOR_PLAN.md](JOB_AGGREGATOR_PLAN.md).
 
 | Aspect | v1 implementation |
 |---|---|

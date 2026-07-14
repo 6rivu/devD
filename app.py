@@ -26,10 +26,11 @@ load_dotenv()
 
 
 # Import custom modules
-from database import init_db, get_user_special_discount, get_user_data, save_user_session, get_business_plan_info, get_user_credits, get_business_credits, update_business_credits, activate_business_plan, get_db_connection, create_business_user, get_business_user, authenticate_business_user, save_business_payment, save_payment, update_user_credits, payment_exists, register_user, verify_user_email, set_email_otp, verify_email_otp, save_cv_generation, record_credit_usage, reset_credits_if_expired
+from database import init_db, get_user_special_discount, get_user_data, save_user_session, get_business_plan_info, get_user_credits, get_business_credits, update_business_credits, activate_business_plan, get_db_connection, create_business_user, get_business_user, authenticate_business_user, save_business_payment, save_payment, update_user_credits, payment_exists, register_user, verify_user_email, set_email_otp, verify_email_otp, save_cv_generation, record_credit_usage, reset_credits_if_expired, save_alignment_answers, get_alignment_answers
 from auth import authenticate_user, logout_user, get_current_user, hash_password
 from payment import process_payment, check_subscription, apply_discount_code, create_checkout_session
-from cv_generator import generate_cv,recommend_jobs_from_resume_ai, generate_cover_letter, extract_resume_text, analyze_cv_ats_score, generate_interview_qa, export_interview_qa
+from cv_generator import generate_cv,recommend_jobs_from_resume_ai, generate_cover_letter, extract_resume_text, analyze_cv_ats_score, generate_interview_qa, export_interview_qa, analyze_cv_jd_gaps, hash_jd
+import job_aggregator as ja
 from templates import apply_template
 from utils import optimize_keywords, enforce_page_limit, get_gemini_response, get_all_country_dial_codes
 
@@ -335,6 +336,13 @@ if 'auto_save' not in st.session_state:
     st.session_state.auto_save = {}
 if 'selected_template' not in st.session_state:
     st.session_state.selected_template = "professional"
+# CV↔JD alignment state machine (Phase 2)
+if 'alignment_stage' not in st.session_state:
+    st.session_state.alignment_stage = "idle"   # idle → questions → generating
+if 'alignment_gaps' not in st.session_state:
+    st.session_state.alignment_gaps = None
+if 'alignment_jd_hash' not in st.session_state:
+    st.session_state.alignment_jd_hash = None
 
 def auto_save_progress():
     """Auto-save user progress"""
@@ -538,16 +546,155 @@ def main():
 
     
     # Main content
-    tab1, tab3, tab4 = st.tabs(["🎯 Match Me to Job", "📊 Analytics", "💳 Billing"])
+    tab1, tab_jobs, tab3, tab4 = st.tabs(["🎯 Match Me to Job", "🔎 Find Jobs", "📊 Analytics", "💳 Billing"])
 
     with tab1:
         show_cv_generation_page()
+
+    with tab_jobs:
+        show_job_aggregator_page()
 
     with tab3:
         show_analytics_page()
 
     with tab4:
         show_billing_page()
+
+def show_job_aggregator_page():
+    """Phase 1 — compliant job search over free/official job APIs. Zero LLM calls."""
+    st.markdown("## 🔎 Find Jobs")
+    st.caption(
+        "Search live roles from free/official job APIs (Remotive, Arbeitnow, Adzuna). "
+        "**1 credit per search.** Upload your résumé to get a match score on each job."
+    )
+
+    email = st.session_state.user_data["email"]
+
+    # --- résumé for match score: reuse the one from the CV tab, else offer an upload ---
+    resume_text = ""
+    existing = st.session_state.get("uploaded_resume")
+    if existing is not None:
+        try:
+            resume_text = extract_resume_text(existing) or ""
+        except Exception:
+            resume_text = ""
+    if resume_text:
+        st.success("Using the résumé you uploaded on the ‘Match Me to Job’ tab for match scoring.")
+    else:
+        picked = st.file_uploader(
+            "Résumé (optional — enables match score)", type=["pdf", "docx"], key="ja_resume"
+        )
+        if picked is not None:
+            try:
+                resume_text = extract_resume_text(picked) or ""
+            except Exception:
+                resume_text = ""
+
+    # --- search form ---
+    with st.form("job_search_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            title = st.text_input("Job title *", key="ja_title", placeholder="e.g. Python Developer")
+            location = st.text_input("Location", key="ja_location",
+                                     placeholder="e.g. London (mainly affects Adzuna)")
+        with c2:
+            yoe = st.number_input("Years of experience", min_value=0, max_value=50, value=0,
+                                  step=1, key="ja_yoe")
+            country = st.selectbox("Country (Adzuna)",
+                                   options=["gb", "us", "in", "ca", "au", "de", "fr", "nl"],
+                                   index=0, key="ja_country")
+        work_types = st.multiselect(
+            "Work type (leave empty for all)",
+            options=[ja.REMOTE_WORLDWIDE, ja.REMOTE_IN_COUNTRY, ja.ONSITE_HYBRID, ja.CONTRACT],
+            key="ja_worktypes",
+        )
+        submitted = st.form_submit_button("🔎 Search jobs (1 credit)")
+
+    if submitted:
+        if not title.strip():
+            st.warning("Please enter a job title to search.")
+        else:
+            credits = get_user_credits(email)
+            if credits < 1:
+                st.warning("You need at least 1 credit to search. Top up in the 💳 Billing tab.")
+            else:
+                query = ja.SearchQuery(
+                    title=title.strip(),
+                    years_experience=int(yoe) if yoe else None,
+                    location=location.strip(),
+                    work_types=work_types,
+                    country=country,
+                )
+                with st.spinner("Searching job sources…"):
+                    try:
+                        result = ja.search_jobs(query, resume_text=resume_text or None)
+                    except Exception as e:
+                        result = None
+                        st.error(f"Job search failed: {e}")
+                if result is not None:
+                    # Charge only when at least one source was actually reachable — a total
+                    # outage is transient and must not cost a credit.
+                    reachable = any(s in ("ok", "cached", "stale") for s in result["status"].values())
+                    if reachable:
+                        if not deduct_user_credits(email, 1, feature="Job Search"):
+                            result = None  # deduction failed (race) → don't show as a paid search
+                    st.session_state["ja_result"] = result
+
+    _render_job_results(st.session_state.get("ja_result"), resume_text)
+
+
+def _render_job_results(result, resume_text):
+    """Render the search result stored in session (persists across reruns)."""
+    if not result:
+        return
+
+    status = result["status"]
+    counts = result["counts"]
+    reason = result["empty_reason"]
+
+    badge = {"ok": "✓", "cached": "✓ cached", "stale": "~ stale", "error": "✕", "auth": "key?"}
+    src_line = " · ".join(f"{s.title()} {badge.get(v, v)}" for s, v in status.items())
+    if src_line:
+        st.caption(f"Sources: {src_line}")
+
+    jobs = result["jobs"]
+    if not jobs:
+        if reason == "unreachable":
+            st.error("Couldn't reach the job sources right now — **no credit was charged**. Please try again.")
+        elif reason == "filtered_out":
+            st.info("No jobs matched your work-type filters. Try loosening them.")
+        else:
+            st.info("No jobs found for that search. Try a different title or location.")
+        return
+
+    note = "" if resume_text else " — upload a résumé for match scores"
+    st.success(f"Showing {counts['shown']} job(s){note}.")
+
+    for j in jobs:
+        with st.container(border=True):
+            st.subheader(j.title)
+            st.markdown(f"**{j.company or '—'}** · {j.location or '—'}")
+            chips = []
+            if j.match_score is not None:
+                chips.append(f"🎯 {j.match_score}% match")
+            chips.append(f"🌍 {j.remote_type}")
+            if j.job_type and j.job_type != "—":
+                chips.append(f"💼 {j.job_type}")
+            if j.salary:
+                chips.append(f"💰 {j.salary}")
+            if j.seniority:
+                chips.append(f"📈 {j.seniority}")
+            if j.posted_date:
+                chips.append(f"🗓 {j.posted_date}")
+            st.caption(" · ".join(chips))
+            col_btn, col_src = st.columns([1, 4])
+            with col_btn:
+                if j.url:
+                    st.link_button("View / Apply", j.url)
+            with col_src:
+                also = f" (also on {', '.join(j.also_on)})" if j.also_on else ""
+                st.caption(f"via {j.source_name}{also}")
+
 
 def show_login_page():
     st.markdown("## 🔐 Login to CVOLVE PRO")
@@ -918,6 +1065,18 @@ def show_cv_generation_page():
         help="Higher percentages may require more aggressive optimization"
     )
 
+    # --- CV↔JD alignment: mandatory accuracy disclaimer (client-required, verbatim) ---
+    st.info(
+        "Please provide accurate information based on your real experience. CVOLVE PRO can "
+        "help structure and improve your CV, but you are responsible for the accuracy of the "
+        "information you provide. If you enter false or misleading details, you accept full "
+        "responsibility for the final content."
+    )
+    st.checkbox(
+        "I confirm the information I provide is accurate and based on my real experience.",
+        key="alignment_ack",
+    )
+
     col1, col2, col3 = st.columns(3)
     with col1:
         generate_cv_btn = st.button("🚀 Generate Optimized CV", type="primary")
@@ -946,7 +1105,7 @@ def show_cv_generation_page():
                       help="Requires Premium + Premium Classic plan and ≥3 credits")
 
     # ======================
-    # Generate CV (generation-only; no download UI here)
+    # Generate CV — with CV↔JD alignment flow
     # ======================
     if generate_cv_btn:
         if uploaded_file and jd.strip():
@@ -955,99 +1114,203 @@ def show_cv_generation_page():
                 st.error("⚠️ Insufficient credits. Please purchase more credits or upgrade your subscription.")
                 return
 
-            loading_placeholder = st.empty()
-            loading_placeholder.markdown("""
-                <div style="display: flex; flex-direction: column; align-items: center; padding: 20px;">
-                    <div class="custom-loader"></div>
-                    <p style="margin-top: 10px;">🔄 Optimizing your CV... Please wait</p>
-                </div>
-            """, unsafe_allow_html=True)
+            resume_text = extract_resume_text(uploaded_file)
+            email = st.session_state.user_data['email']
+            jd_h = hash_jd(jd)
 
-            time.sleep(0.5)  # Optional: show loader briefly before real work starts
-            start_time = time.time()
-
-            try:
-                # Extract resume text
-                resume_text = extract_resume_text(uploaded_file)
-
-                # Generate optimized CV
-                sections_to_use = st.session_state.auto_save.get('sections', {
-                    "Professional Summary": True,
-                    "Key Skills": True,
-                    "Work Experience": True,
-                    "Education": True,
-                    "Certifications": True,
-                    "Projects": True,
-                    "Awards": False,
-                    "Languages": False,
-                    "Hobbies": False
-                })
-
-                st.session_state["target_match"] = target_match
-
-                cv_content = generate_cv(
-                    resume_text=resume_text,
-                    job_description=jd,
-                    target_match=target_match,
-                    template=st.session_state.selected_template,
-                    sections=sections_to_use,
-                    quantitative_focus=60,
-                    action_verb_intensity="High",
-                    keyword_matching="Balanced",
-                    language=st.session_state.get("selected_language", "English")
-                )
-
-                # Enforce 2-page limit
-                cv_content = enforce_page_limit(cv_content)
-
-                # Store in session for preview
-                st.session_state.cv_preview = cv_content
-                st.session_state.job_description = jd  # for ATS analysis
-
-                # ===== Cache export bytes for stable downloads across reruns =====
-                clean_preview = st.session_state.cv_preview.replace("**", "")  # strip markdown asterisks for PDF
-                pdf_buffer = apply_template(clean_preview, st.session_state.selected_template)
-                docx_buffer = create_word_document(st.session_state.cv_preview)
-                st.session_state.cv_pdf_bytes = pdf_buffer.getvalue()
-                st.session_state.cv_docx_bytes = docx_buffer.getvalue()
-
-                loading_placeholder.empty()
-
-                processing_time = time.time() - start_time
-                st.success(f"✅ CV generated successfully in {processing_time:.1f} seconds!")
-
-                # --- Persist this generation for Analytics ---
-                try:
-                    jd_clean     = _sanitize_db_text(jd)
-                    resume_clean = _sanitize_db_text(resume_text)
-                    cv_clean     = _sanitize_db_text(st.session_state.cv_preview)
-
-                    quick_analysis = optimize_keywords(cv_clean, jd_clean)
-                    ats_score_val  = int(quick_analysis.get("score") or target_match or 0)
-
-                    if st.session_state.get("account_type") != "business":
-
-                        save_cv_generation(
-                            user_email=st.session_state.user_data['email'],
-                            job_description=jd_clean,
-                            original_resume=resume_clean,
-                            generated_cv=cv_clean,
-                            template_used=st.session_state.selected_template,
-                            ats_score=ats_score_val,
-                            target_match=int(target_match),
-                            processing_time=float(f"{processing_time:.2f}")
+            # Check if we already have stored answers for this JD
+            saved = get_alignment_answers(email, jd_h)
+            if saved and saved.get("answers"):
+                # User already answered gap questions for this JD — go straight to generation
+                st.session_state.alignment_stage = "generating"
+                st.session_state.alignment_gaps = None
+                st.session_state.alignment_jd_hash = jd_h
+            else:
+                # Run gap analysis (+1 LLM call) to see if the CV is sufficient
+                with st.spinner("🔍 Analyzing your CV against the job description…"):
+                    try:
+                        gap_result = analyze_cv_jd_gaps(
+                            resume_text, jd,
+                            language=st.session_state.get("selected_language", "English")
                         )
-                except Exception as e:
-                    st.error("❌ Failed to record this CV in Analytics. See details below.")
-                    st.exception(e)
+                    except Exception:
+                        gap_result = {"sufficient": True, "overall_match": None, "gaps": []}
 
-                # Deduct credits (only once here)
-                deduct_user_credits(st.session_state.user_data['email'], 3, feature="CV")
-
-            except Exception as e:
-                st.error(f"❌ Error generating CV: {str(e)}")
+                if gap_result.get("sufficient") or not gap_result.get("gaps"):
+                    # CV is well-matched — generate directly
+                    st.session_state.alignment_stage = "generating"
+                    st.session_state.alignment_gaps = None
+                    st.session_state.alignment_jd_hash = jd_h
+                else:
+                    # Gaps found — show questions form
+                    st.session_state.alignment_stage = "questions"
+                    st.session_state.alignment_gaps = gap_result
+                    st.session_state.alignment_jd_hash = jd_h
+                    st.rerun()   # rerun so the questions form renders
         else:
             st.warning("⚠️ Please upload your resume and provide a job description")
+
+    # ======================
+    # CV↔JD alignment — questions form (shown when gaps are found)
+    # ======================
+    if st.session_state.alignment_stage == "questions" and st.session_state.alignment_gaps:
+        gap_result = st.session_state.alignment_gaps
+        gaps = gap_result.get("gaps", [])
+        overall = gap_result.get("overall_match")
+
+        st.markdown("---")
+        st.markdown("### 🔍 We found some areas your CV doesn't fully cover")
+        if overall is not None:
+            st.metric("Overall Match Estimate", f"{overall}%")
+        st.caption(
+            "Answer the questions below to help us enrich your CV with your real experience. "
+            "You can skip any question you prefer not to answer."
+        )
+
+        for gap in gaps:
+            with st.container(border=True):
+                st.markdown(f"**{gap.get('area', '')}**")
+                if gap.get("why"):
+                    st.caption(f"Why: {gap['why']}")
+                st.text_area(
+                    gap.get("question", "Tell us more:"),
+                    key=f"gap_answer_{gap['id']}",
+                    placeholder=gap.get("example", ""),
+                    height=80,
+                )
+                st.button("🎤 Speak (coming soon)", disabled=True, key=f"gap_voice_{gap['id']}")
+
+        col_use, col_skip = st.columns(2)
+        with col_use:
+            use_answers_btn = st.button("✅ Use my answers & generate", type="primary")
+        with col_skip:
+            skip_btn = st.button("⏭ Skip & generate")
+
+        if use_answers_btn or skip_btn:
+            email = st.session_state.user_data['email']
+            jd_h = st.session_state.alignment_jd_hash
+
+            # Collect answers from session state
+            answers = {}
+            for gap in gaps:
+                ans = st.session_state.get(f"gap_answer_{gap['id']}", "").strip()
+                if ans:
+                    answers[gap.get("area", gap["id"])] = ans
+
+            # Save answers (even if all empty — records that the user saw the questions)
+            try:
+                save_alignment_answers(email, jd_h, gaps, answers)
+            except Exception:
+                pass  # non-critical, don't block generation
+
+            st.session_state.alignment_stage = "generating"
+            st.rerun()
+
+    # ======================
+    # CV generation — the actual generation step
+    # ======================
+    if st.session_state.alignment_stage == "generating" and uploaded_file and jd.strip():
+        # Reset stage immediately so it doesn't re-trigger on next rerun
+        st.session_state.alignment_stage = "idle"
+
+        loading_placeholder = st.empty()
+        loading_placeholder.markdown("""
+            <div style="display: flex; flex-direction: column; align-items: center; padding: 20px;">
+                <div class="custom-loader"></div>
+                <p style="margin-top: 10px;">🔄 Optimizing your CV... Please wait</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+        time.sleep(0.5)  # Optional: show loader briefly before real work starts
+        start_time = time.time()
+
+        try:
+            # Extract resume text
+            resume_text = extract_resume_text(uploaded_file)
+
+            # Retrieve stored alignment answers for this JD (if any)
+            email = st.session_state.user_data['email']
+            jd_h = st.session_state.alignment_jd_hash or hash_jd(jd)
+            extra_context = get_alignment_answers(email, jd_h).get("answers", {})
+
+            # Generate optimized CV
+            sections_to_use = st.session_state.auto_save.get('sections', {
+                "Professional Summary": True,
+                "Key Skills": True,
+                "Work Experience": True,
+                "Education": True,
+                "Certifications": True,
+                "Projects": True,
+                "Awards": False,
+                "Languages": False,
+                "Hobbies": False
+            })
+
+            st.session_state["target_match"] = target_match
+
+            cv_content = generate_cv(
+                resume_text=resume_text,
+                job_description=jd,
+                target_match=target_match,
+                template=st.session_state.selected_template,
+                sections=sections_to_use,
+                quantitative_focus=60,
+                action_verb_intensity="High",
+                keyword_matching="Balanced",
+                language=st.session_state.get("selected_language", "English"),
+                extra_context=extra_context,
+            )
+
+            # Enforce 2-page limit
+            cv_content = enforce_page_limit(cv_content)
+
+            # Store in session for preview
+            st.session_state.cv_preview = cv_content
+            st.session_state.job_description = jd  # for ATS analysis
+
+            # ===== Cache export bytes for stable downloads across reruns =====
+            clean_preview = st.session_state.cv_preview.replace("**", "")  # strip markdown asterisks for PDF
+            pdf_buffer = apply_template(clean_preview, st.session_state.selected_template)
+            docx_buffer = create_word_document(st.session_state.cv_preview)
+            st.session_state.cv_pdf_bytes = pdf_buffer.getvalue()
+            st.session_state.cv_docx_bytes = docx_buffer.getvalue()
+
+            loading_placeholder.empty()
+
+            processing_time = time.time() - start_time
+            st.success(f"✅ CV generated successfully in {processing_time:.1f} seconds!")
+
+            # --- Persist this generation for Analytics ---
+            try:
+                jd_clean     = _sanitize_db_text(jd)
+                resume_clean = _sanitize_db_text(resume_text)
+                cv_clean     = _sanitize_db_text(st.session_state.cv_preview)
+
+                quick_analysis = optimize_keywords(cv_clean, jd_clean)
+                ats_score_val  = int(quick_analysis.get("score") or target_match or 0)
+
+                if st.session_state.get("account_type") != "business":
+
+                    save_cv_generation(
+                        user_email=st.session_state.user_data['email'],
+                        job_description=jd_clean,
+                        original_resume=resume_clean,
+                        generated_cv=cv_clean,
+                        template_used=st.session_state.selected_template,
+                        ats_score=ats_score_val,
+                        target_match=int(target_match),
+                        processing_time=float(f"{processing_time:.2f}")
+                    )
+            except Exception as e:
+                st.error("❌ Failed to record this CV in Analytics. See details below.")
+                st.exception(e)
+
+            # Deduct credits (only once here)
+            deduct_user_credits(st.session_state.user_data['email'], 3, feature="CV")
+
+        except Exception as e:
+            loading_placeholder.empty()
+            st.error(f"❌ Error generating CV: {str(e)}")
 
     # ======================
     # Generate Cover Letter (unchanged flow)
@@ -1070,7 +1333,10 @@ def show_cv_generation_page():
 
             try:
                 resume_text = extract_resume_text(uploaded_file)
-                cover_letter = generate_cover_letter(resume_text, jd, language=st.session_state.get("selected_language", "English"))
+                # Enrich with stored alignment answers (if any)
+                _cl_jd_hash = hash_jd(jd)
+                _cl_extra = get_alignment_answers(st.session_state.user_data['email'], _cl_jd_hash).get("answers", {})
+                cover_letter = generate_cover_letter(resume_text, jd, language=st.session_state.get("selected_language", "English"), extra_context=_cl_extra)
 
                 # ✅ Clean any Markdown markers like ** or *
                 cover_letter = re.sub(r'\*{1,2}', '', cover_letter)
@@ -1186,8 +1452,12 @@ def show_cv_generation_page():
                 # Extract resume text
                 resume_text = extract_resume_text(uploaded_file)
 
+                # Enrich with stored alignment answers (if any)
+                _qa_jd_hash = hash_jd(jd)
+                _qa_extra = get_alignment_answers(st.session_state.user_data['email'], _qa_jd_hash).get("answers", {})
+
                 # Generate Q&A
-                qa_content = generate_interview_qa(resume_text, jd)
+                qa_content = generate_interview_qa(resume_text, jd, extra_context=_qa_extra)
 
                 loading_placeholder.empty()
 

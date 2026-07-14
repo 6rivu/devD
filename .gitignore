@@ -17,7 +17,9 @@ __pycache__/
 *.egg-info/
 
 # Legacy / local artifacts
-users.db
+# users.db
+cvolvepro_fresh_20260713.sql
+cvolvepro.sql
 
 # Recovered-from-VPS working area (see docs/VPS_RECOVERY.md)
 # vps_recovery/

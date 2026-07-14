@@ -131,7 +131,9 @@ from database import (
     jobsqa_authenticate,
     jobsqa_get_credits,
     jobsqa_update_credits,
-    jobsqa_save_interview
+    jobsqa_save_interview,
+    get_alignment_answers,
+    save_alignment_answers
 )
 import cv_generator
 from templates import apply_template
@@ -192,6 +194,18 @@ class JobsQASignupRequest(BaseModel):
 class JobsQALoginRequest(BaseModel):
     email: str
     password: str
+
+class CVJDGapRequest(BaseModel):
+    job_description: str
+    resume_base64: Optional[str] = None
+    resume_filename: Optional[str] = None
+    language: Optional[str] = "English"
+    max_gaps: Optional[int] = 5
+
+class SaveAlignmentRequest(BaseModel):
+    jd_hash: str
+    gaps: Optional[list] = []
+    answers: Optional[dict] = {}
 
 
 # ---------- Helpers ----------
@@ -315,6 +329,8 @@ def _build_generate_args(req: GenerateCVRequest, resume_text: str = "") -> Dict[
         "keyword_matching": req_dict.get("keyword_matching") if "keyword_matching" in req_dict else defaults.get("keyword_matching"),
         "language": req_dict.get("language") or defaults.get("language") or "English",
         "model": model_input,
+        "model_choice": model_input,
+        "extra_context": (req_dict.get("extras") or {}).get("extra_context"),
         "output_format": req_dict.get("output_format") if "output_format" in req_dict else ( (req_dict.get("extras") or {}).get("output_format") or defaults.get("output_format") )
     }
 
@@ -1054,7 +1070,7 @@ async def api_generate_cv(req: GenerateCVRequest, Authorization: Optional[str] =
             if k not in call_kwargs or call_kwargs.get(k) is None:
                 call_kwargs[k] = v
 
-        if 'model' not in call_kwargs:
+        if 'model' not in call_kwargs and 'model_choice' not in call_kwargs:
             model_from_req = None
             try:
                 req_dict = req.dict(exclude_none=True)
@@ -1062,6 +1078,9 @@ async def api_generate_cv(req: GenerateCVRequest, Authorization: Optional[str] =
             except Exception:
                 model_from_req = None
             call_kwargs['model'] = (model_from_req or "premium").lower()
+            call_kwargs['model_choice'] = call_kwargs['model']
+        elif 'model' in call_kwargs and 'model_choice' not in call_kwargs:
+            call_kwargs['model_choice'] = call_kwargs['model']
 
         if 'language' not in call_kwargs:
             try:
@@ -1090,6 +1109,13 @@ async def api_generate_cv(req: GenerateCVRequest, Authorization: Optional[str] =
                     "Work Experience": True,
                     "Education": True
                 }
+
+        if not call_kwargs.get("extra_context") and req.job_description:
+            try:
+                jd_h = cv_generator.hash_jd(req.job_description)
+                call_kwargs["extra_context"] = get_alignment_answers(user_email, jd_h).get("answers", {})
+            except Exception:
+                pass
 
         cv_result = cv_generator.generate_cv(**call_kwargs)
     except TypeError as te:
@@ -1306,7 +1332,113 @@ async def debug_preview(req: GenerateCVRequest, Authorization: Optional[str] = H
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Debug preview failed")
-    
+
+# ---------- CV↔JD gap analysis + alignment endpoints ----------
+
+@app.post("/api/cv_jd_gaps")
+async def api_cv_jd_gaps(req: CVJDGapRequest, Authorization: Optional[str] = Header(None)):
+    """Gap analysis: compare resume against JD, return structured gaps.
+    Costs 1 credit (1 LLM call). Returns JSON with gaps and follow-up questions.
+    """
+    # 1) Auth
+    if not Authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        user_email = verify_bearer_token(Authorization)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # 2) Credits check — gap analysis costs 1 credit
+    credits_now = None
+    try:
+        credits_now = get_user_credits(user_email)
+    except Exception:
+        credits_now = None
+    if credits_now is not None and credits_now < 1:
+        raise HTTPException(status_code=402, detail="Insufficient credits (need ≥1 for gap analysis)")
+
+    # 3) Validate JD
+    if not req.job_description or not req.job_description.strip():
+        raise HTTPException(status_code=400, detail="Missing job_description")
+
+    # 4) Extract resume text from base64
+    resume_text = ""
+    if req.resume_base64:
+        try:
+            decoded = base64.b64decode(req.resume_base64)
+            bio = io.BytesIO(decoded)
+            bio.name = req.resume_filename or "resume.pdf"
+            if hasattr(cv_generator, "extract_resume_text"):
+                resume_text = cv_generator.extract_resume_text(bio)
+        except Exception:
+            resume_text = ""
+
+    # 5) Run gap analysis
+    try:
+        from cv_generator import analyze_cv_jd_gaps, hash_jd
+        gap_result = analyze_cv_jd_gaps(
+            resume_text,
+            req.job_description,
+            language=req.language or "English",
+            max_gaps=req.max_gaps or 5,
+        )
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Gap analysis failed")
+
+    # 6) Deduct 1 credit
+    try:
+        update_user_credits(user_email, -1)
+    except Exception:
+        traceback.print_exc()
+
+    # 7) Return result
+    updated_credits = None
+    try:
+        updated_credits = get_user_credits(user_email)
+    except Exception:
+        pass
+
+    jd_hash = hash_jd(req.job_description)
+
+    return {
+        "success": True,
+        "jd_hash": jd_hash,
+        "sufficient": gap_result.get("sufficient", True),
+        "overall_match": gap_result.get("overall_match"),
+        "gaps": gap_result.get("gaps", []),
+        "credits": updated_credits,
+    }
+
+
+@app.post("/api/save_alignment_answers")
+async def api_save_alignment(req: SaveAlignmentRequest, Authorization: Optional[str] = Header(None)):
+    """Persist the user's answers to gap-analysis follow-up questions.
+    Keyed by JD hash so the same answers enrich CV, cover letter, and interview prep.
+    """
+    if not Authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        user_email = verify_bearer_token(Authorization)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if not req.jd_hash or not req.jd_hash.strip():
+        raise HTTPException(status_code=400, detail="Missing jd_hash")
+
+    try:
+        from database import save_alignment_answers
+        save_alignment_answers(user_email, req.jd_hash, req.gaps or [], req.answers or {})
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to save alignment answers")
+
+    return {"success": True}
+
 @app.post("/api/jobsqa/signup")
 async def jobsqa_signup(req: JobsQASignupRequest):
     try:
@@ -1443,10 +1575,17 @@ async def jobsqa_generate_interview_qa(
             resume_text = ""
 
     # 4️⃣ GENERATE INTERVIEW Q&A (STRICT)
+    qa_extra = {}
+    try:
+        jd_h = cv_generator.hash_jd(req.job_description)
+        qa_extra = get_alignment_answers(email, jd_h).get("answers", {})
+    except Exception:
+        pass
     try:
         qa_text = cv_generator.generate_interview_qa(
             resume_text,
-            req.job_description
+            req.job_description,
+            extra_context=qa_extra
         )
     except Exception as e:
         traceback.print_exc()
@@ -1678,11 +1817,18 @@ async def api_generate_cl(req: GenerateCLRequest, Authorization: Optional[str] =
             resume_text = ""
 
     try:
+        cl_extra = (req.extras or {}).get("extra_context", {})
+        if not cl_extra and req.job_description:
+            try:
+                jd_h = cv_generator.hash_jd(req.job_description)
+                cl_extra = get_alignment_answers(user_email, jd_h).get("answers", {})
+            except Exception:
+                pass
         # generate via available function
         if hasattr(cv_generator, "generate_cover_letter"):
-            cover_letter = cv_generator.generate_cover_letter(resume_text, req.job_description, language=req.language)
+            cover_letter = cv_generator.generate_cover_letter(resume_text, req.job_description, language=req.language, extra_context=cl_extra)
         else:
-            cover_letter = cv_generator.generate_cl(resume_text, req.job_description, language=req.language)
+            cover_letter = cv_generator.generate_cl(resume_text, req.job_description, language=req.language, extra_context=cl_extra)
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Cover letter generation failed")

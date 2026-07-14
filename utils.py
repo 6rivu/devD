@@ -280,6 +280,25 @@ def extract_keywords_from_text(text: str) -> List[str]:
     
     return keywords[:20]  # Return top 20 keywords
 
+def keyword_overlap_score(resume_text: str, jd_text: str) -> int:
+    """Local resume↔job match score (0–100). Zero LLM calls.
+
+    Percentage of *meaningful* job-description keywords (stop-words removed via
+    filter_keywords) that also appear in the resume. Deterministic — same inputs
+    always yield the same score. Used by the job aggregator (Phase 1).
+    """
+    if not resume_text or not jd_text:
+        return 0
+
+    token = r'\b[a-zA-Z][a-zA-Z0-9\-]+\b'
+    jd_keywords = set(filter_keywords(re.findall(token, jd_text.lower())))
+    if not jd_keywords:
+        return 0
+
+    cv_keywords = set(re.findall(token, resume_text.lower()))
+    overlap = jd_keywords & cv_keywords
+    return round(len(overlap) / len(jd_keywords) * 100)
+
 def enforce_page_limit(content: str, max_pages: int = 2) -> str:
     """Enforce page limit by trimming content intelligently"""
     
