@@ -1159,25 +1159,34 @@ def show_cv_generation_page():
         overall = gap_result.get("overall_match")
 
         st.markdown("---")
-        st.markdown("### 🔍 We found some areas your CV doesn't fully cover")
-        if overall is not None:
-            st.metric("Overall Match Estimate", f"{overall}%")
-        st.caption(
-            "Answer the questions below to help us enrich your CV with your real experience. "
-            "You can skip any question you prefer not to answer."
-        )
+        head_l, head_r = st.columns([3, 1])
+        with head_l:
+            st.markdown("### 🔍 A few areas your CV doesn't fully cover yet")
+            st.caption(
+                "Answer what you can — we'll use your real experience to strengthen the CV. "
+                "Every question is optional; skip any you'd rather not answer."
+            )
+        with head_r:
+            if overall is not None:
+                st.metric("JD match", f"{overall}%")
 
         for gap in gaps:
             with st.container(border=True):
                 st.markdown(f"**{gap.get('area', '')}**")
                 if gap.get("why"):
-                    st.caption(f"Why: {gap['why']}")
+                    st.caption(f"Why this matters: {gap['why']}")
                 st.text_area(
                     gap.get("question", "Tell us more:"),
                     key=f"gap_answer_{gap['id']}",
-                    placeholder=gap.get("example", ""),
-                    height=80,
+                    placeholder="Type your answer here…",
+                    height=90,
                 )
+                # Show the AI's sample answer as a hint BELOW the box — not as the
+                # input's placeholder, which made the field look pre-filled with the
+                # answer the user was supposed to type.
+                example = gap.get("example", "")
+                if example:
+                    st.caption(f"💡 Example: {example}")
                 st.button("🎤 Speak (coming soon)", disabled=True, key=f"gap_voice_{gap['id']}")
 
         col_use, col_skip = st.columns(2)
@@ -1215,13 +1224,12 @@ def show_cv_generation_page():
 
         loading_placeholder = st.empty()
         loading_placeholder.markdown("""
-            <div style="display: flex; flex-direction: column; align-items: center; padding: 20px;">
+            <div class="cvolve-loading">
                 <div class="custom-loader"></div>
-                <p style="margin-top: 10px;">🔄 Optimizing your CV... Please wait</p>
+                <p class="cvolve-loading-text">Optimizing your CV — this usually takes a few seconds…</p>
             </div>
         """, unsafe_allow_html=True)
 
-        time.sleep(0.5)  # Optional: show loader briefly before real work starts
         start_time = time.time()
 
         try:
@@ -1323,13 +1331,11 @@ def show_cv_generation_page():
 
             loading_placeholder = st.empty()
             loading_placeholder.markdown("""
-                <div style="display: flex; flex-direction: column; align-items: center; padding: 20px;">
+                <div class="cvolve-loading">
                     <div class="custom-loader"></div>
-                    <p style="margin-top: 10px;">📝 Generating cover letter... Please wait</p>
+                    <p class="cvolve-loading-text">Generating your cover letter — this usually takes a few seconds…</p>
                 </div>
             """, unsafe_allow_html=True)
-
-            time.sleep(0.5)
 
             try:
                 resume_text = extract_resume_text(uploaded_file)
@@ -2858,9 +2864,14 @@ def show_register_page():
 
     # --- Register: send OTP first; DO NOT create user yet ---
     if st.button("Register", key="register_button"):
-        name = st.session_state["register_name"].strip()
-        email = st.session_state["register_email_address"].strip().lower()
-        raw_phone = st.session_state["register_phone"].strip()
+        # Read the widget keys directly. Streamlit keeps these current on every rerun
+        # (including this button click), whereas the register_* mirrors are only synced
+        # by the on_change callbacks — which don't fire if the user clicks Register while
+        # a field still has focus, leaving the mirrors empty and triggering a false
+        # "invalid email" / "fill in all fields" error.
+        name = st.session_state.get("name_input", "").strip()
+        email = st.session_state.get("email_input", "").strip().lower()
+        raw_phone = st.session_state.get("phone_input", "").strip()
         region = st.session_state.get("register_region", "IN")
         e164_phone = ""
 
@@ -2886,7 +2897,7 @@ def show_register_page():
                 st.warning("Could not parse the phone number. Please check it.")
                 e164_phone = f"{st.session_state['register_country_code']} {raw_phone}"
 
-        password = st.session_state["register_password"].strip()
+        password = st.session_state.get("password_input", "").strip()
         if not (name and email and password):
             st.error("Please fill in all required fields.")
             return

@@ -261,6 +261,7 @@ These were real issues in the pre-recovery code, fixed now. Kept so the fixes ar
 | Symptom | Cause / fix |
 |---|---|
 | App exits immediately with a `psycopg2` / connection error | The DB container is down or `.env` port is wrong. `docker start cvolve-pg`; confirm `.env` has `DB_PORT=5433`. |
+| **Streamlit `segmentation fault (core dumped)`** on a page with a table (Analytics, or after a PDF upload) | Native-library crash from **unpinned** bleeding-edge `pandas`/`pyarrow`. pandas 3.0's pyarrow-backed strings crash on DataFrame construction, and pyarrow 25 conflicts with grpc (from `google-generativeai`) over Abseil symbols during Arrow serialization. **Fix:** `pip install 'pandas>=2.2,<2.3' 'pyarrow>=18,<19'` (already pinned in `requirements.txt` — reinstall with `pip install -r requirements.txt` if you hit this). Verified combo: pandas 2.2.3 + pyarrow 18.1.0 + numpy 2.4.6. |
 | `docker` commands fail / can't reach daemon | Docker Desktop isn't running. `systemctl --user start docker-desktop` (it's a **user** service; this user isn't in the `docker` group). |
 | Restore fails with a `\restrict` / syntax error | You're restoring with PostgreSQL < 16 (e.g. the native `:5432` PG14). Use the Docker PG16 container (§4). |
 | `password authentication failed` | `.env` password doesn't match the container's `POSTGRES_PASSWORD` (`cvolve_local_2026`). |

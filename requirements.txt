@@ -37,6 +37,20 @@ PyPDF2>=3.0.0,<4.0.0
 python-docx>=1.1.0,<2.0.0
 reportlab>=4.0.0,<5.0.0
 
+# --- Data stack (PINNED — do not loosen) ---
+# These are pulled in transitively by Streamlit for st.dataframe/st.table. Left
+# unpinned, pip installed bleeding-edge pandas 3.0 / pyarrow 25 / numpy 2.4, which
+# SEGFAULT the Streamlit server when rendering a dataframe:
+#   * pandas 3.0 defaults strings to a pyarrow-backed dtype that crashes during
+#     DataFrame construction (pandas/core/arrays/string_arrow.py).
+#   * pyarrow 25 conflicts with grpc (bundled by google-generativeai) over Abseil
+#     symbols and crashes during Arrow serialization (convert_pandas_df_to_arrow_bytes).
+# The pins below are the verified-stable combo (Streamlit 1.59, analytics page renders
+# cleanly, 47 tests green). See docs/LOCAL_SETUP.md §Troubleshooting.
+numpy>=1.26,<2.5
+pandas>=2.2,<2.3
+pyarrow>=18,<19
+
 # --- Charts (analytics dashboard) ---
 plotly>=5.18.0,<6.0.0
 
