@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 import hashlib
 import secrets
 from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def get_db_connection():
     return psycopg2.connect(

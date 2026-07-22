@@ -551,6 +551,27 @@ def main():
         
         st.session_state.auto_save['sections'] = sections
         
+        # Sidebar Resume Upload (global)
+        st.markdown("---")
+        st.markdown("### 📄 Master Resume / CV")
+        sidebar_cv = st.file_uploader(
+            "Upload CV (PDF/DOCX)",
+            type=["pdf", "docx"],
+            help="Upload your master resume to use for matching and optimization",
+            key="sidebar_cv_uploader"
+        )
+        if sidebar_cv:
+            stored = st.session_state.get("uploaded_resume")
+            if stored is None or stored.name != sidebar_cv.name or stored.size != sidebar_cv.size:
+                st.session_state.uploaded_resume = sidebar_cv
+                st.rerun()
+
+        current_sidebar_cv = st.session_state.get("uploaded_resume")
+        if current_sidebar_cv:
+            st.caption(f"✅ Active CV: **{current_sidebar_cv.name}**")
+        else:
+          st.caption("ℹ️ No CV loaded yet")
+
         # Quick links
         st.markdown("---")
         with st.sidebar.expander("📚 How It Works"):
@@ -1098,8 +1119,34 @@ def _show_manual_jd_mode(email: str):
         st.markdown("---")
         st.markdown("### 📁 Step 2: Upload CV & Check ATS Score")
         
+        uploaded_manual_file = st.file_uploader(
+            "Choose your CV / Resume file (PDF or DOCX)",
+            type=["pdf", "docx"],
+            help="Upload your existing resume in PDF or DOCX format",
+            key="resume_uploader_manual_jd"
+        )
+        if uploaded_manual_file:
+            stored = st.session_state.get("uploaded_resume")
+            if stored is None or stored.name != uploaded_manual_file.name or stored.size != uploaded_manual_file.size:
+                st.session_state.uploaded_resume = uploaded_manual_file
+                st.rerun()
+
+        # Re-evaluate active_file and cached resume_text
+        active_file = st.session_state.get("uploaded_resume")
+        resume_text = ""
+        if active_file is not None:
+            cache_key = f"resume_text_cache_{active_file.name}_{active_file.size}"
+            if cache_key in st.session_state:
+                resume_text = st.session_state[cache_key]
+            else:
+                try:
+                    resume_text = extract_resume_text(active_file) or ""
+                    st.session_state[cache_key] = resume_text
+                except Exception:
+                    resume_text = ""
+
         if active_file is None:
-            st.warning("⚠️ Please upload your CV/Resume in the sidebar first to proceed.")
+            st.info("💡 Upload your CV/Resume above to unlock ATS check and 1-Click optimization.")
         else:
             st.success(f"✅ Loaded CV: **{active_file.name}**")
             
