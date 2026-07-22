@@ -1,29 +1,43 @@
 /* ============================================================================
-   CVOLVE PRO — "Calm professional" theme
-   Static, low-distraction UI: soft neutral canvas, indigo accent, rounded
-   cards, high text contrast. No infinite background animation (perf + focus).
+   CVOLVE PRO — Reverted Gold/Orange + Pastel Animated Theme
+   Ensuring high contrast text visibility
    ============================================================================ */
 
 :root {
-    --bg:            #f6f7fb;   /* app canvas (static)         */
+    --bg-static:     #f6f7fb;   /* fallback bg */
     --surface:       #ffffff;   /* cards, inputs               */
-    --surface-2:     #f1f5f9;   /* subtle fills                */
+    --surface-2:     #f8fafc;   /* subtle fills                */
     --text:          #1e293b;   /* slate-800, primary text     */
     --muted:         #64748b;   /* slate-500, secondary text   */
     --border:        #e2e8f0;   /* slate-200                   */
-    --primary:       #4f46e5;   /* indigo-600                  */
-    --primary-hover: #4338ca;   /* indigo-700                  */
-    --primary-tint:  #eef2ff;   /* indigo-50                   */
-    --ring:          rgba(79, 70, 229, 0.18);
+    --primary:       #ff8c00;   /* dark orange                 */
+    --primary-hover: #e07b00;   /* deeper orange               */
+    --primary-tint:  #fff7ed;   /* orange-50                   */
+    --ring:          rgba(255, 140, 0, 0.18);
     --shadow:        0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
     --shadow-md:     0 6px 16px rgba(15, 23, 42, 0.10);
     --radius:        12px;
 }
 
-/* ---- Canvas ---------------------------------------------------------------- */
+/* ---- Animated Pastel Canvas ------------------------------------------------ */
 .stApp {
-    background: var(--bg);           /* static — no gradient animation */
+    background: linear-gradient(
+        135deg,
+        #fbcfd7 20%,  /* brighter pink */
+        #fce0e3 35%,  /* soft pink */
+        #f9e4d0 50%,  /* peach */
+        #e0d6ff 75%,  /* pastel lavender-blue */
+        #cfe4ff 100%  /* light sky blue */
+    );
+    background-size: 400% 400%;
+    animation: gradientBG 15s ease infinite;
     color: var(--text);
+}
+
+@keyframes gradientBG {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 .main .block-container {
@@ -32,10 +46,10 @@
     max-width: 1100px;
 }
 
-/* ---- Header banner --------------------------------------------------------- */
+/* ---- Header banner (Gold/Orange with high contrast dark text) -------------- */
 .header {
-    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
-    color: #ffffff;
+    background: linear-gradient(135deg, #FFD700 0%, #FF8C00 100%);
+    color: #1e293b; /* High-contrast dark charcoal text */
     padding: 2rem;
     border-radius: var(--radius);
     margin-bottom: 1.75rem;
@@ -48,12 +62,14 @@
     font-size: 2.35rem;
     font-weight: 700;
     letter-spacing: -0.02em;
+    color: #1e293b !important;
 }
 
 .header p {
     margin: 0;
     font-size: 1.1rem;
-    opacity: 0.92;
+    opacity: 0.95;
+    color: #1e293b !important;
 }
 
 /* ---- Buttons --------------------------------------------------------------- */
@@ -79,17 +95,18 @@
     transform: translateY(1px);
 }
 
-/* Primary call-to-action */
+/* Primary call-to-action (Gold/Orange with dark text for contrast) ----------- */
 .stButton > button[kind="primary"] {
-    background: var(--primary);
-    color: #ffffff;
-    border: 1px solid var(--primary);
+    background: linear-gradient(135deg, #FFD700 0%, #FF8C00 100%);
+    color: #1e293b;
+    border: none;
+    font-weight: 700;
 }
 
 .stButton > button[kind="primary"]:hover {
-    background: var(--primary-hover);
-    border-color: var(--primary-hover);
-    color: #ffffff;
+    background: linear-gradient(135deg, #FF8C00 0%, #FFD700 100%);
+    color: #1e293b;
+    box-shadow: 0 4px 12px rgba(255, 140, 0, 0.25);
 }
 
 .stButton > button:disabled,
@@ -122,7 +139,7 @@
 
 .stTextInput input::placeholder,
 .stTextArea textarea::placeholder {
-    color: #94a3b8 !important;   /* clearly a hint, not real content */
+    color: #94a3b8 !important;
     opacity: 1;
 }
 
@@ -294,8 +311,13 @@
 /* ---- Scrollbar ------------------------------------------------------------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--surface-2); }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: var(--primary); }
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #FFD700, #FF8C00);  /* Gold to Orange */
+    border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #FF8C00, #FFD700);  /* Orange to Gold on hover */
+}
 
 /* ---- Fade-in helper -------------------------------------------------------- */
 .fade-in { animation: fadeIn 0.35s ease-in; }

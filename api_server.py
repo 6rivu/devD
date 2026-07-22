@@ -37,7 +37,7 @@ def _load_toml(path: str):
         return toml.load(path)
     except Exception:
         try:
-            import tomli
+            import tomli  # type: ignore[reportMissingImports]
             with open(path, "rb") as f:
                 return tomli.load(f)
         except Exception:
@@ -112,12 +112,12 @@ try:
     from docx.shared import Inches, Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 except Exception:
-    Document = None
-    OxmlElement = None
-    qn = None
-    Inches = None
-    Pt = None
-    WD_ALIGN_PARAGRAPH = None
+    Document: Any = None
+    OxmlElement: Any = None
+    qn: Any = None
+    Inches: Any = None
+    Pt: Any = None
+    WD_ALIGN_PARAGRAPH: Any = None
 
 # reuse your modules (must be on PYTHONPATH / same folder)
 from auth import authenticate_email
@@ -308,7 +308,7 @@ def _inspect_generate_cv_defaults() -> Dict[str, Any]:
 
 def _build_generate_args(req: GenerateCVRequest, resume_text: str = "") -> Dict[str, Any]:
     defaults = _inspect_generate_cv_defaults()
-    req_dict = req.dict(exclude_none=True)
+    req_dict = req.model_dump(exclude_none=True) if hasattr(req, "model_dump") else req.dict(exclude_none=True)
     args: Dict[str, Any] = {}
 
     sections_input = req_dict.get("sections")
@@ -343,13 +343,13 @@ def _build_generate_args(req: GenerateCVRequest, resume_text: str = "") -> Dict[
             args[name] = req_dict.get(name)
         elif name in extras:
             args[name] = extras[name]
-        elif name in defaults:
+        elif name in defaults and defaults[name] is not None:
             if name == "sections":
                 args[name] = _to_sections_dict(defaults[name])
             else:
                 args[name] = defaults[name]
 
-    if "sections" in sig.parameters and "sections" in args and args["sections"] is None:
+    if "sections" in sig.parameters and "sections" in args and args["sections"] is None and req_dict.get("sections") is not None:
         raise ValueError("Unable to convert provided 'sections' into a dict mapping (expected dict/list/string)")
 
     args = {k: v for k, v in args.items() if v is not None}
@@ -621,7 +621,7 @@ def create_word_document(content: str) -> BytesIO:
         section.right_margin = Inches(0.4)
 
     # Set base font and spacing
-    style = doc.styles['Normal']
+    style: Any = doc.styles['Normal']
     font = style.font
     font.name = 'Calibri'
     font.size = Pt(11)
@@ -786,7 +786,7 @@ def create_cover_letter_docx(text: str) -> BytesIO:
         section.right_margin = Inches(0.8)
 
     # Normal style
-    base = doc.styles["Normal"]
+    base: Any = doc.styles["Normal"]
     base.font.name = "Calibri"
     base.font.size = Pt(11)
 
@@ -1518,6 +1518,7 @@ async def jobsqa_verify_otp(payload: dict):
 
 @app.post("/api/jobsqa/login")
 def jobsqa_login(req: JobsQALoginRequest):
+    user = None
     try:
         user = jobsqa_authenticate(req.email, req.password)
     except ValueError as e:
@@ -1609,7 +1610,7 @@ async def jobsqa_generate_interview_qa(
     try:
         jobsqa_save_interview(
             user_id,
-            req.resume_filename,
+            req.resume_filename or "",
             req.job_description,
             qa_text
         )
@@ -1826,9 +1827,9 @@ async def api_generate_cl(req: GenerateCLRequest, Authorization: Optional[str] =
                 pass
         # generate via available function
         if hasattr(cv_generator, "generate_cover_letter"):
-            cover_letter = cv_generator.generate_cover_letter(resume_text, req.job_description, language=req.language, extra_context=cl_extra)
+            cover_letter = cv_generator.generate_cover_letter(resume_text, req.job_description, language=req.language or "English", extra_context=cl_extra)
         else:
-            cover_letter = cv_generator.generate_cl(resume_text, req.job_description, language=req.language, extra_context=cl_extra)
+            cover_letter = getattr(cv_generator, "generate_cl")(resume_text, req.job_description, language=req.language or "English", extra_context=cl_extra)
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Cover letter generation failed")
@@ -1878,7 +1879,7 @@ async def api_generate_cl(req: GenerateCLRequest, Authorization: Optional[str] =
         if 'create_word_document' in globals():
             word_buf = create_cover_letter_docx(normalized)
         elif hasattr(cv_generator, "create_word_document"):
-            word_buf = cv_generator.create_word_document(normalized)
+            word_buf = getattr(cv_generator, "create_word_document")(normalized)
         else:
             word_buf = None
 
@@ -1977,7 +1978,7 @@ async def jobsqa_stripe_webhook(request: Request):
         except ValueError as e:
             logging.error(f"❌ Invalid webhook payload: {str(e)}")
             raise HTTPException(status_code=400, detail="Invalid payload")
-        except stripe.error.SignatureVerificationError as e:
+        except stripe.error.SignatureVerificationError as e:  # type: ignore[reportAttributeAccessIssue]
             logging.error(f"❌ Invalid webhook signature: {str(e)}")
             raise HTTPException(status_code=400, detail="Invalid signature")
         

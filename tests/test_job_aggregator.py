@@ -270,5 +270,35 @@ class TestOrchestration(unittest.TestCase):
         self.assertEqual(res["counts"]["shown"], 1)
 
 
+class TestHTMLScraper(unittest.TestCase):
+    def test_parser_ignores_boilerplate(self):
+        html_content = """
+        <html>
+            <head><title>Job Title</title></head>
+            <body>
+                <header><nav>Nav Link</nav></header>
+                <style>.foo { color: red; }</style>
+                <script>console.log("hello");</script>
+                <div class="content">
+                    <h1>Software Engineer</h1>
+                    <p>Required skills: Python, SQL</p>
+                </div>
+                <footer>Footer content</footer>
+            </body>
+        </html>
+        """
+        parser = ja.JobDescriptionHTMLParser()
+        parser.feed(html_content)
+        text = parser.get_text()
+        self.assertIn("Software Engineer", text)
+        self.assertIn("Required skills: Python, SQL", text)
+        self.assertNotIn("Nav Link", text)
+        self.assertNotIn("console.log", text)
+        self.assertNotIn("Footer content", text)
+
+    def test_fetch_full_description_none_on_empty(self):
+        self.assertIsNone(ja.fetch_full_job_description(""))
+
+
 if __name__ == "__main__":
     unittest.main()

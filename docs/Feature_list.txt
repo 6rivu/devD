@@ -97,6 +97,7 @@ Recommendations for further practice.
 
 The interview feature should feel like a real interview preparation tool, not only a question and answer generator.
 
+
 CV and job alignment question flow
 
 At the moment, the tool creates a CV based on the job description. This is useful, but there is a risk that if the user’s CV is not properly aligned with the job, the tool may generate content that is not fully supported by the user’s actual experience.

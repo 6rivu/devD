@@ -510,3 +510,64 @@ def search_jobs(query: SearchQuery, resume_text: Optional[str] = None,
         "counts": {"total": len(deduped), "shown": len(filtered)},
         "empty_reason": empty_reason,
     }
+
+
+# ============================== HTML Scraper ===================================
+class JobDescriptionHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text_blocks: list[str] = []
+        self.ignore_tags = {"script", "style", "head", "title", "meta", "link", "noscript", "header", "footer", "nav"}
+        self.current_tag_stack: list[str] = []
+        self.should_ignore = False
+
+    def handle_starttag(self, tag, attrs):
+        self.current_tag_stack.append(tag)
+        if tag in self.ignore_tags:
+            self.should_ignore = True
+
+    def handle_endtag(self, tag):
+        if self.current_tag_stack:
+            self.current_tag_stack.pop()
+        self.should_ignore = any(t in self.ignore_tags for t in self.current_tag_stack)
+
+    def handle_data(self, data):
+        if not self.should_ignore:
+            stripped = data.strip()
+            if stripped:
+                self.text_blocks.append(stripped)
+
+    def get_text(self) -> str:
+        return "\n".join(self.text_blocks)
+
+
+def fetch_full_job_description(url: str) -> Optional[str]:
+    """Fetch the original job posting URL and extract readable text from it.
+    Returns None if fetching fails or if extracted text is too short.
+    """
+    if not url:
+        return None
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
+        resp = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
+        if resp.status_code != 200:
+            return None
+        
+        parser = JobDescriptionHTMLParser()
+        parser.feed(resp.text)
+        text = parser.get_text()
+        
+        # Clean up excessive newlines and whitespace
+        text = re.sub(r'\n+', '\n', text)
+        text = re.sub(r' +', ' ', text)
+        
+        final_text = text.strip()[:MAX_DESC_CHARS]
+        if len(final_text) > 200:
+            return final_text
+    except Exception as e:
+        logger.warning("Failed to fetch full job description from %s: %s", url, e)
+    return None
+

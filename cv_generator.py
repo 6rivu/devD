@@ -2,6 +2,7 @@ import os
 import re
 import json
 from datetime import datetime
+from typing import Any
 import PyPDF2 as pdf
 from docx import Document
 import google.generativeai as genai
@@ -29,8 +30,8 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 # Initialize Gemini client
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-2.5-flash")
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))  # type: ignore
+model = genai.GenerativeModel("gemini-2.5-flash")  # type: ignore
 
 
 # =============================================================================
@@ -126,7 +127,8 @@ def parse_gap_analysis(raw_text, max_gaps: int = 5) -> dict:
     gaps = gaps[:max_gaps]
 
     try:
-        overall = int(data.get("overall_match")) if data.get("overall_match") is not None else None
+        val = data.get("overall_match")
+        overall = int(str(val)) if val is not None else None
     except (TypeError, ValueError):
         overall = None
 
@@ -220,12 +222,12 @@ def extract_resume_text(uploaded_file):
 def generate_cv(
     resume_text,
     job_description,
-    target_match,
-    template,
-    sections,
-    quantitative_focus,
-    action_verb_intensity,
-    keyword_matching,
+    target_match=100,
+    template="professional",
+    sections=None,
+    quantitative_focus=60,
+    action_verb_intensity="High",
+    keyword_matching="Balanced",
     language="English",
     model_choice="premium",
     extra_context="",
@@ -239,6 +241,8 @@ def generate_cv(
         object used to call Gemini; it is only used for prompt/config choices.
       - We normalize `sections` so the function safely accepts dict / list / str.
     """
+    if target_match is None:
+        target_match = 100
 
     # --- Normalize `sections` (accept list/tuple/str/dict safely) ---
     if sections is None:
@@ -801,7 +805,8 @@ def generate_cover_letter(resume_text, job_description, language="English", extr
                 ],
                 temperature=0.2
             )
-            cover_letter = response.choices[0].message.content
+            content = response.choices[0].message.content
+            cover_letter = content if content is not None else ""
             return re.sub(r'\*{1,2}', '', cover_letter).strip()
 
         else:
@@ -902,7 +907,8 @@ def analyze_cv_ats_score(cv_content, job_description):
                 ],
                 temperature=0.0  # Keep it deterministic for scoring
             )
-            raw_text = response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            raw_text = content.strip() if content is not None else ""
 
         else:
             # ✅ Gemini-based analysis
@@ -971,7 +977,7 @@ def enhance_action_verbs(content, intensity="High"):
     # For now, return the content as-is
     return content
 
-def generate_interview_qa(resume_text, job_description, extra_context=""):
+def generate_interview_qa(resume_text, job_description, extra_context: Any = ""):
     """Generate interview Q&A using Gemini AI"""
     verified_block = build_verified_context_block(extra_context)
     prompt = f"""
@@ -1151,8 +1157,9 @@ def export_interview_qa(content):
             continue
 
         # Section headings
-        if heading_re.match(line):
-            title = heading_re.match(line).group(1)
+        m_heading = heading_re.match(line)
+        if m_heading:
+            title = m_heading.group(1)
             story.append(Paragraph(title, heading_style))
             story.append(Spacer(1, 6))
             in_action_block = False
@@ -1192,8 +1199,9 @@ def export_interview_qa(content):
             in_action_block = False
             continue
 
-        if heading_re.match(line):
-            title = heading_re.match(line).group(1)
+        m_heading = heading_re.match(line)
+        if m_heading:
+            title = m_heading.group(1)
             p = word_doc.add_paragraph()
             r = p.add_run(title)
             r.bold = True
@@ -1223,6 +1231,51 @@ def export_interview_qa(content):
 
         word_doc.add_paragraph(line)
 
+    word_doc.save(docx_buffer)
+    docx_buffer.seek(0)
+
+    return pdf_buffer, docx_buffer
+
+def export_cover_letter(content):
+    """Export cover letter to PDF and Word DOCX formats."""
+    from io import BytesIO
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from docx import Document
+    from docx.shared import Pt
+    import re
+
+    # ---------- Styles (PDF) ----------
+    styles = getSampleStyleSheet()
+    normal_style = ParagraphStyle(
+        'NormalStyle', fontSize=11, leading=15, spaceAfter=10
+    )
+
+    pdf_buffer = BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer)
+    story = []
+
+    lines = content.split('\n')
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            story.append(Spacer(1, 10))
+            continue
+        story.append(Paragraph(line_str, normal_style))
+
+    doc.build(story)
+    pdf_buffer.seek(0)
+
+    # ---------- DOCX ----------
+    docx_buffer = BytesIO()
+    word_doc = Document()
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            continue
+        word_doc.add_paragraph(line_str)
+    
     word_doc.save(docx_buffer)
     docx_buffer.seek(0)
 
