@@ -10,16 +10,56 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def get_secret(key: str, default=None):
+    """
+    Fetch secret from Streamlit secrets (st.secrets) or environment variables (os.getenv).
+    Supports top-level secrets and nested [postgres] section.
+    """
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and st.secrets is not None:
+            if key in st.secrets:
+                return st.secrets[key]
+            if "postgres" in st.secrets and isinstance(st.secrets["postgres"], (dict, st.secrets.__class__)):
+                if key in st.secrets["postgres"]:
+                    return st.secrets["postgres"][key]
+                lower_key = key.lower().replace("db_", "")
+                if lower_key in st.secrets["postgres"]:
+                    return st.secrets["postgres"][lower_key]
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
 def get_db_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        database=os.getenv("DB_NAME", "cvolvepro"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", ""),
-        connect_timeout=10,
-        application_name="cvolvepro"
-    )
+    db_url = get_secret("DATABASE_URL") or get_secret("POSTGRES_URL") or get_secret("DB_URL")
+    if db_url:
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(db_url, connect_timeout=10, application_name="cvolvepro")
+
+    host = get_secret("DB_HOST", "127.0.0.1")
+    port = int(get_secret("DB_PORT", "5432"))
+    database = get_secret("DB_NAME", get_secret("DB_DATABASE", "cvolvepro"))
+    user = get_secret("DB_USER", get_secret("DB_USERNAME", "postgres"))
+    password = get_secret("DB_PASSWORD", "")
+    sslmode = get_secret("DB_SSLMODE", None)
+
+    conn_kwargs = {
+        "host": host,
+        "port": port,
+        "database": database,
+        "user": user,
+        "password": password,
+        "connect_timeout": 10,
+        "application_name": "cvolvepro"
+    }
+
+    if sslmode:
+        conn_kwargs["sslmode"] = sslmode
+    elif host not in ("127.0.0.1", "localhost"):
+        conn_kwargs["sslmode"] = "require"
+
+    return psycopg2.connect(**conn_kwargs)
 
 def init_db():
     """Initialize database tables"""

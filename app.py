@@ -280,10 +280,34 @@ def _sanitize_db_text(s: str) -> str:
 
 
 # Initialize database
-init_db()
-
-from database import seed_discount_codes
-seed_discount_codes()
+try:
+    init_db()
+    from database import seed_discount_codes
+    seed_discount_codes()
+except Exception as e:
+    st.error("🚨 **Database Connection Error**")
+    st.warning(
+        "Could not connect to the PostgreSQL database.\n\n"
+        "**If you deployed on Streamlit Cloud:**\n"
+        "1. Go to your app dashboard on Streamlit Cloud.\n"
+        "2. Click **Manage app** (lower right) -> **Settings** -> **Secrets**.\n"
+        "3. Add your remote PostgreSQL connection details in Secrets:\n\n"
+        "```toml\n"
+        'DATABASE_URL = "postgresql://user:password@your-db-host.com:5432/cvolvepro?sslmode=require"\n'
+        "```\n"
+        "**OR**\n\n"
+        "```toml\n"
+        'DB_HOST = "your-db-host.com"\n'
+        'DB_PORT = "5432"\n'
+        'DB_NAME = "cvolvepro"\n'
+        'DB_USER = "postgres"\n'
+        'DB_PASSWORD = "your_db_password"\n'
+        'DB_SSLMODE = "require"\n'
+        "```"
+    )
+    with st.expander("Technical details / Error log"):
+        st.code(str(e))
+    st.stop()
 
 def get_allowed_ai_models_for_user():
     """
