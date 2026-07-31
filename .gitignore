@@ -1,2 +1,25 @@
 # Nested git repo, content already hosted separately
 abhirup/
+
+# Secrets — never commit credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Legacy / local artifacts
+users.db
+cvolvepro_fresh_20260713.sql
+cvolvepro.sql
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

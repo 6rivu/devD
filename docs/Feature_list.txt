@@ -1,0 +1,212 @@
+Hi Team,
+
+I am looking for a specialist development team to review and improve www.cvolvepro.com. The platform is already built, but I now need expert support to make it more secure, stable, and feature rich.
+
+There are four priority areas.
+
+API security review and hardening
+
+The platform needs a proper API security review and hardening. Since the website handles CVs, job descriptions, interview questions, generated documents, credits, and user data, the APIs must be protected properly.
+
+As part of this work, I would like you to review how the APIs are currently exposed, how they are being called from the frontend, and whether there are any weaknesses that could allow users to inspect, misuse, manipulate, or bypass protected API endpoints.
+
+Any weakness found during the review must be fixed.
+
+The work should include:
+
+Reviewing the current API exposure and access flow.
+
+Ensuring users cannot directly access, abuse, manipulate, inspect, or bypass protected API endpoints.
+
+Preventing misuse of credits, tokens, prompts, user data, CV data, interview data, and generated outputs.
+
+Adding proper controls such as authentication, authorization, rate limits, request validation, logging, and monitoring where required.
+
+Fixing security gaps that could lead to API misuse, credit bypass, data leakage, or platform abuse.
+
+The goal is simple: users should not be able to attack, inspect, misuse, or bypass the platform’s APIs or credits.
+
+Interview preparation module
+
+The interview module is one of the main USPs of CVOLVE PRO.
+
+The tool is already generating interview questions and answers based on the job description. I now want to convert this into a stronger AI interview practice feature.
+
+Required features:
+
+The platform should continue generating interview questions and answers based on the job description and CV.
+
+Questions should be divided into two sections:
+Behavioral interview questions
+Technical interview questions
+
+Each section should have difficulty levels:
+Simple
+Hard
+Very hard
+
+The user should be able to choose the interview duration:
+15 minutes
+30 minutes
+45 minutes
+
+Credit deduction should depend on the selected duration.
+15 minutes should use lower credits.
+30 minutes should use medium credits.
+45 minutes should use higher credits.
+
+The generated interview questions and answers should be downloadable in Word and PDF.
+
+There should be an AI interviewer or AI agent who can ask the generated questions one by one.
+
+The user should be able to answer either by typing or by speaking.
+
+Spoken answers should be recorded, transcribed, and saved.
+
+This should work like a proper interview practice session.
+
+The AI should evaluate the user’s answers. It should not expect an exact word by word match with the stored answer.
+
+Evaluation should be based on meaning, keyword coverage, relevance, structure, completeness, and confidence.
+
+The system should check whether the user has covered the important points expected for that question.
+
+At the end of the practice session, the user should receive a full feedback report.
+
+The feedback report should include:
+
+Overall interview performance.
+
+Strengths.
+
+Weak areas.
+
+Questions answered well.
+
+Questions where the answer was incomplete.
+
+Keywords covered.
+
+Keywords missed.
+
+Suggested improved answers.
+
+Score or rating by section.
+
+Recommendations for further practice.
+
+The interview feature should feel like a real interview preparation tool, not only a question and answer generator.
+
+
+CV and job alignment question flow
+
+At the moment, the tool creates a CV based on the job description. This is useful, but there is a risk that if the user’s CV is not properly aligned with the job, the tool may generate content that is not fully supported by the user’s actual experience.
+
+I want a smarter alignment flow.
+
+Required features:
+
+The system should compare the uploaded CV against the job description.
+
+If the CV already has enough evidence, it can generate the tailored CV.
+
+If the CV does not have enough evidence, the system should ask the user follow up questions before generating the CV.
+
+For each missing area, the system should ask one clear question.
+
+Under every question, there should be space for the user to type the answer.
+
+The user should also have the option to speak the answer.
+
+Spoken answers should be recorded, transcribed, and stored.
+
+Each question should include an example so the user understands what kind of answer is expected.
+
+The system should use the user’s answers to improve the CV, cover letter, and interview preparation.
+
+The tool should avoid inventing unsupported experience.
+
+There should also be a clear disclaimer:
+
+“Please provide accurate information based on your real experience. CVOLVE PRO can help structure and improve your CV, but you are responsible for the accuracy of the information you provide. If you enter false or misleading details, you accept full responsibility for the final content.”
+
+Job aggregator module
+
+I also want to add a job search and aggregation feature.
+
+The user should be able to enter:
+
+Job title
+
+Years of experience
+
+Location
+
+Preferred work type
+
+Preferred geography
+
+The user should then be shown relevant jobs.
+
+Work type filters should include:
+
+Remote within country
+
+These are remote jobs where the person may still need the right to work or visa for that country.
+
+Worldwide remote
+
+These are jobs that can genuinely be done from anywhere and do not require the person to be physically based in that country.
+
+Project based or contract work
+
+These are freelance, contract, hourly, consulting, or short term assignments.
+
+Onsite or hybrid jobs
+
+These require the person to go to the workplace.
+
+Important requirement:
+
+The job aggregator must not illegally scrape platforms that do not allow scraping. The team should identify which job boards, company career pages, ATS platforms, and public APIs can be used safely. Where scraping is not allowed, the system should not scrape.
+
+The preferred approach is to use permitted sources, official APIs, RSS feeds, approved scraping, and compliant data partnerships.
+
+The system should show enough detail for each job:
+
+Job title.
+
+Company.
+
+Location.
+
+Remote type.
+
+Visa or right to work requirement where available.
+
+Job type.
+
+Source link.
+
+Posted date where available.
+
+Match score against the user’s profile.
+
+I do not want to complete everything in one go. I would prefer to approach this in clear phases, starting with the most urgent and high impact areas first.
+
+Please let me know:
+
+What can realistically be done.
+
+Which items should be prioritised first.
+
+How you would break this into phases.
+
+The estimated timeline for each phase.
+
+The estimated cost for each phase.
+
+What you would need from me to begin.
+
+A phased timeline would be very helpful so I can plan the work properly and move ahead step by step.
+
