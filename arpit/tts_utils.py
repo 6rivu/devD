@@ -21,14 +21,16 @@ def tts_component_html(question_text: str) -> str:
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: system-ui, -apple-system, sans-serif;
-            display: flex; align-items: center; justify-content: center;
+            display: flex; align-items: center; justify-content: flex-start;
             min-height: 50px; background: transparent;
         }}
         .speak-btn {{
-            padding: 8px 20px; border-radius: 24px; border: none;
+            padding: 10px 24px; border-radius: 26px; border: none;
             background: linear-gradient(135deg, #6c5ce7, #a29bfe);
-            color: white; font-weight: 600; cursor: pointer; font-size: 14px;
-            transition: transform 0.2s; box-shadow: 0 2px 8px rgba(108,92,231,0.3);
+            color: white; font-weight: 700; cursor: pointer; font-size: 15px;
+            letter-spacing: 0.3px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 3px 10px rgba(108,92,231,0.3);
         }}
         .speak-btn:hover {{ transform: scale(1.05); }}
         .speak-btn:active {{ transform: scale(0.97); }}
@@ -37,7 +39,7 @@ def tts_component_html(question_text: str) -> str:
     </style>
 </head>
 <body>
-    <div style="text-align:center">
+    <div>
         <button class="speak-btn" id="speakBtn">🔊 Play Question</button>
         <div id="status"></div>
     </div>
@@ -102,7 +104,7 @@ def tts_component_html(question_text: str) -> str:
 
 
 def voice_recorder_component_html(textarea_key: str) -> str:
-    """Full HTML page for st.components.v1.html — records voice and sends transcript back."""
+    """Full HTML page — records voice via MediaRecorder and transcribes via Deepgram API."""
     return f"""
 <!DOCTYPE html>
 <html>
@@ -122,136 +124,132 @@ def voice_recorder_component_html(textarea_key: str) -> str:
         }}
         .btn-record {{ background: linear-gradient(135deg,#e94560,#c0392b); color: #fff; }}
         .btn-stop {{ background: linear-gradient(135deg,#2ecc71,#16a085); color: #fff; display: none; }}
-        .btn-send {{ background: linear-gradient(135deg,#3498db,#2980b9); color: #fff; display: none; }}
         .btn:hover {{ transform: scale(1.05); }}
         #status {{ font-size: 13px; color: #555; margin-top: 6px; min-height: 20px; }}
         #transcript {{
             margin-top: 8px; padding: 10px; border-radius: 8px;
             background: #f8f9ff; border: 1px solid #dee2ff;
             font-size: 14px; line-height: 1.5; min-height: 40px;
-            white-space: pre-wrap; display: none; text-align: left;
+            white-space: pre-wrap; text-align: left; word-wrap: break-word;
         }}
         .pulse {{ animation: pulse 1s infinite; }}
         @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.4}} }}
+        .copy-btn {{
+            padding: 6px 14px; border-radius: 20px; border: none; cursor: pointer;
+            background: #3498db; color: white; font-size: 12px; font-weight: 600;
+            margin-top: 8px; transition: transform 0.2s;
+        }}
+        .copy-btn:hover {{ transform: scale(1.05); }}
+        .copy-btn.copied {{ background: #2ecc71; }}
     </style>
 </head>
 <body>
     <div class="container">
         <button class="btn btn-record" id="startBtn">🎙️ Start Speaking</button>
         <button class="btn btn-stop" id="stopBtn">⏹️ Stop</button>
-        <button class="btn btn-send" id="sendBtn" style="display:none">📋 Use This Answer</button>
         <div id="status"></div>
-        <div id="transcript"></div>
+        <div id="transcript" style="display:none"></div>
+        <div id="copyArea" style="display:none;margin-top:6px">
+            <button class="copy-btn" id="copyBtn">📋 Copy & Auto-Fill</button>
+        </div>
     </div>
 
     <script>
     (function() {{
         var startBtn = document.getElementById('startBtn');
         var stopBtn = document.getElementById('stopBtn');
-        var sendBtn = document.getElementById('sendBtn');
         var statusEl = document.getElementById('status');
         var transcriptEl = document.getElementById('transcript');
-        var recognition = null;
+        var copyArea = document.getElementById('copyArea');
+        var copyBtn = document.getElementById('copyBtn');
+        var stream = null;
+        var mediaRecorder = null;
+        var audioChunks = [];
         var finalText = '';
+        var API_URL = 'http://localhost:8000/api/transcribe';
 
-        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-        function postToStreamlit(val) {{
-            var attempts = 0;
-            function trySend() {{
-                attempts++;
-                try {{
-                    if (window.Streamlit && window.Streamlit.setComponentValue) {{
-                        window.Streamlit.setComponentValue(val);
-                        return true;
-                    }}
-                }} catch(e) {{}}
-                if (attempts < 15) {{
-                    setTimeout(trySend, 300);
-                }}
-                return false;
-            }}
-            trySend();
-        }}
-
-        // Signal component readiness (retry until available)
-        function signalReady() {{
+        function setTranscript(val) {{
             try {{
-                if (window.Streamlit && window.Streamlit.setComponentReady) {{
-                    window.Streamlit.setComponentReady();
-                    return;
-                }}
-            }} catch(e) {{}}
-            setTimeout(signalReady, 200);
+                window.parent.location.search = '?v=' + encodeURIComponent(val);
+            }} catch(e) {{
+                try {{
+                    window.location.search = '?v=' + encodeURIComponent(val);
+                }} catch(e2) {{}}
+            }}
         }}
-        signalReady();
 
-        startBtn.addEventListener('click', function() {{
-            if (!SR) {{
-                statusEl.textContent = 'Not supported. Please type instead.';
+        function copyToClipboard(text) {{
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try {{
+                document.execCommand('copy');
+                copyBtn.textContent = '✅ Copied!';
+                copyBtn.classList.add('copied');
+                setTimeout(function() {{
+                    copyBtn.textContent = '📋 Copy & Auto-Fill';
+                    copyBtn.classList.remove('copied');
+                }}, 2000);
+            }} catch(e) {{}}
+            document.body.removeChild(ta);
+        }}
+
+        startBtn.addEventListener('click', async function() {{
+            try {{
+                stream = await navigator.mediaDevices.getUserMedia({{ audio: true }});
+            }} catch(e) {{
+                statusEl.textContent = e.name === 'NotAllowedError' ? '❌ Mic blocked' : 'Error: '+e.message;
                 return;
             }}
+            audioChunks = [];
             finalText = '';
             transcriptEl.style.display = 'none';
-            sendBtn.style.display = 'none';
-            recognition = new SR();
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.lang = 'en-US';
-
-            recognition.onstart = function() {{
-                startBtn.style.display = 'none';
-                stopBtn.style.display = 'inline-flex';
-                statusEl.innerHTML = '<span class="pulse" style="color:#e94560;font-weight:600">🔴 Recording...</span>';
-                transcriptEl.style.display = 'block';
-                transcriptEl.textContent = '';
-            }};
-
-            recognition.onresult = function(event) {{
-                var interim = '';
-                for (var i = event.resultIndex; i < event.results.length; i++) {{
-                    var t = event.results[i][0].transcript;
-                    if (event.results[i].isFinal) finalText += t + ' ';
-                    else interim += t;
-                }}
-                transcriptEl.textContent = finalText + interim;
-            }};
-
-            recognition.onend = function() {{
+            copyArea.style.display = 'none';
+            var mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+            mediaRecorder = new MediaRecorder(stream, {{ mimeType: mime }});
+            mediaRecorder.ondataavailable = function(e) {{ if (e.data.size > 0) audioChunks.push(e.data); }};
+            mediaRecorder.onstop = async function() {{
                 startBtn.style.display = 'inline-flex';
                 stopBtn.style.display = 'none';
-                var txt = finalText.trim();
-                if (txt) {{
-                    transcriptEl.textContent = txt;
-                    statusEl.innerHTML = '✅ <b>Done.</b> Sending to editor...';
-                    sendBtn.style.display = 'none';
-                    postToStreamlit(txt);
-                }} else {{
-                    statusEl.textContent = 'No speech detected. Try again or type your answer.';
+                statusEl.innerHTML = '⏳ Transcribing...';
+                var blob = new Blob(audioChunks, {{ type: mediaRecorder.mimeType }});
+                try {{
+                    var resp = await fetch(API_URL, {{ method: 'POST', headers: {{ 'Content-Type': blob.type }}, body: blob }});
+                    var data = await resp.json();
+                    var txt = (data.transcript || '').trim();
+                    if (txt) {{
+                        finalText = txt;
+                        transcriptEl.textContent = txt;
+                        transcriptEl.style.display = 'block';
+                        statusEl.innerHTML = '✅ Done! Click <b>Copy & Auto-Fill</b> to send to editor.';
+                        copyArea.style.display = 'block';
+                        setTranscript(txt);
+                    }} else {{
+                        statusEl.innerHTML = data.error || 'No speech detected. Try again or type your answer.';
+                    }}
+                }} catch(e) {{
+                    statusEl.innerHTML = 'Error: ' + e.message;
                 }}
+                if (stream) {{ stream.getTracks().forEach(function(t){{ t.stop(); }}); stream = null; }}
             }};
-
-            recognition.onerror = function(e) {{
-                statusEl.textContent = 'Error: ' + e.error;
-                startBtn.style.display = 'inline-flex';
-                stopBtn.style.display = 'none';
-            }};
-
-            recognition.start();
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'inline-flex';
+            statusEl.innerHTML = '<span class="pulse" style="color:#e94560;font-weight:600">🔴 Recording...</span>';
+            mediaRecorder.start();
         }});
 
         stopBtn.addEventListener('click', function() {{
-            if (recognition) {{
-                recognition.stop();
-            }}
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
         }});
 
-        sendBtn.addEventListener('click', function() {{
-            var txt = finalText.trim();
+        copyBtn.addEventListener('click', function() {{
+            var txt = finalText.trim() || transcriptEl.textContent.trim();
             if (txt) {{
-                postToStreamlit(txt);
-                statusEl.innerHTML = '✅ <b>Sent!</b>';
-                sendBtn.style.display = 'none';
+                copyToClipboard(txt);
+                setTranscript(txt);
             }}
         }});
     }})();

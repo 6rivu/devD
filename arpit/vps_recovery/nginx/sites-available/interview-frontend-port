@@ -1,0 +1,11 @@
+server {
+    listen 8081;
+    server_name _;
+
+    root /opt/cvolvepro/frontend-interview;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

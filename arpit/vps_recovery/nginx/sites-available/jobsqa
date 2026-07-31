@@ -1,0 +1,56 @@
+server {
+    server_name jobsqa.com www.jobsqa.com;
+
+    root /opt/cvolvepro/frontend-interview;
+    index index.html;
+    
+    location = /payment-success {
+    root /opt/cvolvepro/frontend-interview;
+    try_files /payment-success.html =404;
+    }
+    # Frontend
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 🔥 API → FastAPI
+    location /api/jobsqa/ {
+    	proxy_pass http://127.0.0.1:8000/api/jobsqa/;
+    	proxy_set_header Host $host;
+    	proxy_set_header X-Real-IP $remote_addr;
+    	proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    	proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+
+
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/jobsqa.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/jobsqa.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+
+}
+
+# ================= HTTP → HTTPS =================
+server {
+    if ($host = www.jobsqa.com) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    if ($host = jobsqa.com) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    server_name jobsqa.com www.jobsqa.com;
+    return 301 https://$host$request_uri;
+
+
+
+
+}

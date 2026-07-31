@@ -19,7 +19,6 @@ from datetime import datetime
 import google.generativeai as genai
 import openai
 from streamlit import session_state as st_session
-from tts_utils import tts_component_html, voice_recorder_component_html
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gemini model (shared with cv_generator)
@@ -47,121 +46,27 @@ QUESTION_COUNTS = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Demo AI fallback (works without any API key)
-# ─────────────────────────────────────────────────────────────────────────────
-def _demo_ai_response(prompt: str, json_mode: bool) -> str:
-    import hashlib
-    import json as _json
-
-    seed = hashlib.md5(prompt.encode()).hexdigest()
-
-    if "Generate a structured interview question bank" in prompt or "generate_structured_interview_qa" in prompt.lower():
-        demo = {
-            "behavioral": {
-                "Simple": [
-                    {"question": "Tell me about yourself and why you're interested in this role.", "ideal_answer": "I have [X] years of experience in [field]. My background includes [key achievement]. I'm excited about this role because it aligns with my skills in [skill] and passion for [interest].", "key_points": ["Relevant experience", "Skills match", "Enthusiasm for role", "Career narrative", "Specific examples"]},
-                    {"question": "Describe a time you worked successfully as part of a team.", "ideal_answer": "In my previous role, I collaborated with cross-functional teams on [project]. I contributed by [specific action], which led to [measurable result].", "key_points": ["Team collaboration", "Specific role", "Measurable outcome", "Communication", "Conflict resolution"]},
-                ],
-                "Hard": [
-                    {"question": "Tell me about a time you had to manage a difficult stakeholder.", "ideal_answer": "I was managing a project where a stakeholder kept changing requirements. I scheduled regular syncs, documented all changes, and explained trade-offs. This reduced scope creep by 40%.", "key_points": ["Stakeholder management", "Proactive communication", "Documented process", "Measurable impact", "Diplomacy"]},
-                    {"question": "Describe a situation where you had to lead a team through a major change.", "ideal_answer": "When our team reorganized, I volunteered to lead the transition. I created a communication plan, held one-on-ones with each team member, and maintained productivity during the 3-month transition.", "key_points": ["Change management", "Leadership", "Empathy", "Planning", "Results"]},
-                ],
-                "Very Hard": [
-                    {"question": "Tell me about a time you failed and what you learned from it.", "ideal_answer": "I launched a feature that didn't gain user adoption. I took ownership, analyzed user feedback, and discovered the UX was confusing. I redesigned it based on user research, and adoption increased 3x.", "key_points": ["Ownership of failure", "Analysis", "Learning applied", "Humility", "Improved outcome"]},
-                ],
-            },
-            "technical": {
-                "Simple": [
-                    {"question": "What is the difference between SQL and NoSQL databases?", "ideal_answer": "SQL databases are relational with structured schemas, ACID compliant, and use tables. NoSQL databases are non-relational, flexible schema, horizontally scalable, and include document, key-value, and graph types.", "key_points": ["Relational vs non-relational", "Schema structure", "ACID compliance", "Scaling approach", "Use cases"]},
-                    {"question": "Explain what an API is and how REST works.", "ideal_answer": "An API is an interface that allows applications to communicate. REST uses HTTP methods (GET, POST, PUT, DELETE) to perform CRUD operations on resources identified by URLs.", "key_points": ["API definition", "HTTP methods", "Statelessness", "Resource identification", "JSON/XML"]},
-                ],
-                "Hard": [
-                    {"question": "How would you design a URL shortening service like bit.ly?", "ideal_answer": "I'd use a distributed system with: a hash function (Base62) for short URLs, a database for mapping, caching with Redis, rate limiting, and analytics tracking. The system needs to handle millions of writes.", "key_points": ["Hash function design", "Database choice", "Caching layer", "Redirection (301)", "Scalability"]},
-                    {"question": "Explain how you would optimize a slow database query.", "ideal_answer": "I'd start by EXPLAIN ANALYZE to find bottlenecks, check for missing indexes, optimize JOINs, consider query restructuring, add caching, and potentially denormalize if read-heavy.", "key_points": ["EXPLAIN ANALYZE", "Index optimization", "Query restructuring", "Caching strategy", "Denormalization"]},
-                ],
-                "Very Hard": [
-                    {"question": "Design a real-time collaborative editor like Google Docs.", "ideal_answer": "Use OT (Operational Transformation) or CRDTs for conflict resolution. Architecture: WebSocket connections, operation log, version vectors, in-memory state with persistence. Handle concurrent edits with transformation functions.", "key_points": ["OT vs CRDT", "WebSocket communication", "Conflict resolution", "Version vectors", "Persistence strategy"]},
-                ],
-            },
-        }
-        return _json.dumps(demo)
-
-    if "evaluate" in prompt.lower() and ("answer" in prompt.lower() or "question" in prompt.lower()):
-        return _json.dumps({
-            "score": 72, "meaning_match": 75, "keyword_coverage": 68,
-            "keywords_covered": ["relevant experience", "teamwork", "communication"],
-            "keywords_missed": ["conflict resolution", "specific metrics"],
-            "structure_score": 70, "completeness_score": 65,
-            "confidence_indicators": ["Used specific examples", "Clear structure"],
-            "strengths": ["Good relevant experience", "Clear communication"],
-            "improvements": ["Include more quantifiable results", "Use STAR method more explicitly"],
-            "improved_answer": "In my previous role as a [role], I led a team of 5 to deliver [project] ahead of schedule. I implemented agile practices which improved velocity by 30%. The key was clear communication and regular retrospectives.",
-            "brief_feedback": "Good attempt! You covered relevant experience well. To improve, include specific metrics and follow the STAR format more closely."
-        })
-
-    if "feedback" in prompt.lower() or "performance report" in prompt.lower() or "career coach" in prompt.lower():
-        return _json.dumps({
-            "overall_summary": "You demonstrated solid foundational knowledge with room for improvement in structuring answers and providing quantifiable results.",
-            "key_strengths": ["Strong technical fundamentals", "Clear communication style", "Relevant experience alignment"],
-            "weak_areas": ["Need more quantifiable metrics", "STAR structure needs practice", "Depth in system design questions"],
-            "behavioral_feedback": "Your behavioral answers show good experience but need stronger STAR structure. Focus on including specific metrics.",
-            "technical_feedback": "Technical fundamentals are solid. Work on system design depth and scalability considerations.",
-            "recommendations": [
-                "Practice the STAR method with 5-7 stories from your experience",
-                "Study system design patterns (Grokking the System Design Interview)",
-                "Record yourself answering questions and review",
-                "Prepare 3 strong technical deep-dive topics from your resume",
-                "Practice explaining complex concepts simply"
-            ],
-            "next_steps": "Focus on the questions where you scored below 70 and retry with improved answers. Schedule another session in 3-5 days."
-        })
-
-    return '{"result": "Demo response"}'
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # AI call helper (Gemini / OpenAI)
 # ─────────────────────────────────────────────────────────────────────────────
-_DEMO_MODE = False
-
-def _check_demo_mode():
-    global _DEMO_MODE
-    if _DEMO_MODE:
-        return True
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-    openai_key = os.getenv("OPENAI_API_KEY") or ""
-    if not gemini_key and not openai_key:
-        _DEMO_MODE = True
-        return True
-    return False
-
-
 def _ai_call(prompt: str, json_mode: bool = False) -> str:
-    """Route to OpenAI or Gemini based on session setting, with demo fallback."""
-    if _check_demo_mode():
-        return _demo_ai_response(prompt, json_mode)
-
-    try:
-        if st_session.get("ai_model") == "openai":
-            resp = openai.chat.completions.create(
-                model="gpt-4.1",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                response_format={"type": "json_object"} if json_mode else {"type": "text"},
-            )
-            return resp.choices[0].message.content
-        else:
-            resp = _model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.7,
-                    "response_mime_type": "application/json" if json_mode else "text/plain",
-                },
-            )
-            return resp.text
-    except Exception:
-        _DEMO_MODE = True
-        return _demo_ai_response(prompt, json_mode)
+    """Route to OpenAI or Gemini based on session setting."""
+    if st_session.get("ai_model") == "openai":
+        resp = openai.chat.completions.create(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            response_format={"type": "json_object"} if json_mode else {"type": "text"},
+        )
+        return resp.choices[0].message.content
+    else:
+        resp = _model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.7,
+                "response_mime_type": "application/json" if json_mode else "text/plain",
+            },
+        )
+        return resp.text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -686,8 +591,91 @@ def export_feedback_report(report: dict):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Speech-to-text via inline JavaScript (direct textarea fill)
+# 6. Speech-to-text via browser component (JavaScript + Streamlit)
 # ─────────────────────────────────────────────────────────────────────────────
+VOICE_RECORDER_HTML = """
+<style>
+  .voice-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 20px; border-radius: 30px; border: none; cursor: pointer;
+    font-size: 15px; font-weight: 600; transition: all 0.3s ease;
+  }
+  .voice-btn.record { background: linear-gradient(135deg, #e94560, #c0392b); color: #fff; }
+  .voice-btn.stop   { background: linear-gradient(135deg, #2ecc71, #16a085); color: #fff; }
+  .voice-btn:hover  { transform: scale(1.05); box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+  #status { margin-top:10px; font-size:13px; color:#888; min-height:20px; }
+  #transcript-box { 
+    margin-top:12px; padding:12px; border-radius:10px; 
+    background:#f8f9ff; border:1px solid #dee2ff; 
+    font-size:14px; line-height:1.6; min-height:60px;
+    white-space:pre-wrap;
+  }
+  .pulse { animation: pulse-anim 1s infinite; }
+  @keyframes pulse-anim { 0%,100%{opacity:1} 50%{opacity:0.4} }
+</style>
+
+<div id="voice-widget">
+  <button class="voice-btn record" id="startBtn" onclick="startRecording()">🎙️ Start Speaking</button>
+  <button class="voice-btn stop" id="stopBtn" onclick="stopRecording()" style="display:none">⏹️ Stop Recording</button>
+  <div id="status"></div>
+  <div id="transcript-box" style="display:none"></div>
+</div>
+
+<script>
+let mediaRecorder = null;
+let audioChunks = [];
+let stream = null;
+let finalTranscript = '';
+const API_URL = 'http://localhost:8000/api/transcribe';
+
+function startRecording() {
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(s => {
+      stream = s;
+      audioChunks = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+      mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+        document.getElementById('status').textContent = '⏳ Transcribing...';
+        fetch(API_URL, { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob })
+          .then(r => r.json())
+          .then(data => {
+            const txt = (data.transcript || '').trim();
+            if (txt) {
+              finalTranscript = txt;
+              document.getElementById('status').textContent = '✅ Done!';
+              window.parent.postMessage({type: 'voice_transcript', transcript: txt}, '*');
+            } else {
+              document.getElementById('status').textContent = data.error || 'No speech detected.';
+            }
+          })
+          .catch(err => {
+            document.getElementById('status').textContent = 'Error: ' + err.message;
+          });
+        if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      };
+      document.getElementById('status').innerHTML = '<span class="pulse">🔴 Recording... speak clearly</span>';
+      document.getElementById('startBtn').style.display = 'none';
+      document.getElementById('stopBtn').style.display = 'inline-flex';
+      document.getElementById('transcript-box').style.display = 'block';
+      mediaRecorder.start();
+    })
+    .catch(e => {
+      document.getElementById('status').textContent = e.name === 'NotAllowedError' ? '❌ Mic blocked' : 'Error: ' + e.message;
+    });
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  document.getElementById('startBtn').style.display = 'inline-flex';
+  document.getElementById('stopBtn').style.display = 'none';
+}
+</script>
+"""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Main Streamlit UI — show_interview_practice_page()
 # ─────────────────────────────────────────────────────────────────────────────
@@ -945,7 +933,7 @@ def _phase_session():
     diff_colors = {"Simple": "#2ecc71", "Hard": "#e67e22", "Very Hard": "#e94560"}
     diff_color = diff_colors.get(difficulty, "#888")
 
-    # Question card (no script — safe for st.markdown)
+    # Question card
     st.markdown(f"""
     <div style="border-left:4px solid {diff_color};background:#f8f9ff;border-radius:0 12px 12px 0;
                 padding:20px;margin-bottom:16px">
@@ -956,16 +944,10 @@ def _phase_session():
             <span style="background:{diff_color};color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600">
                 {difficulty}
             </span>
-            <span style="background:#6c5ce7;color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600">
-                🔊 Question Audio
-            </span>
         </div>
-        <p class="interview-question-text" style="font-size:18px;font-weight:600;color:#1a1a2e;margin:0;line-height:1.5">{question_text}</p>
+        <p style="font-size:18px;font-weight:600;color:#1a1a2e;margin:0;line-height:1.5">{question_text}</p>
     </div>
     """, unsafe_allow_html=True)
-
-    # TTS button as a separate components.html block (properly executes JS)
-    st.components.v1.html(tts_component_html(question_text), height=60)
 
     # ── Answer input ──────────────────────────────────────────────────────────
     st.markdown("#### ✍️ Your Answer")
@@ -984,24 +966,20 @@ def _phase_session():
     with tab_voice:
         st.markdown("""
         <div style="background:#fff3cd;border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;color:#856404">
-            💡 <b>Tip:</b> Click "🎙️ Start Speaking", answer aloud, then click "⏹️ Stop".
-            The transcript will be <b>auto-filled</b> into the editable text box below. You can edit it freely.
+            💡 <b>Tip:</b> Click "Start Speaking", answer the question aloud, then click "Stop Recording".
+            The transcript will appear below. Then paste it above or submit directly.
         </div>
         """, unsafe_allow_html=True)
 
-        voice_key = f"voice_answer_{idx}"
-
-        # Voice recorder — uses st.components.v1.html (properly executes JS in iframe)
-        transcript = st.components.v1.html(voice_recorder_component_html(voice_key), height=220)
-        if transcript and isinstance(transcript, str) and transcript.strip():
-            st.session_state[voice_key] = transcript
+        st.components.v1.html(VOICE_RECORDER_HTML, height=200, scrolling=False)
 
         voice_answer = st.text_area(
-            "Your answer (editable — edit the transcription or type):",
-            height=140,
-            placeholder="Speak your answer using the button above, then edit here...",
-            key=voice_key,
-            label_visibility="collapsed",
+            "Transcribed / edited voice answer:",
+            height=120,
+            placeholder="Your spoken answer will appear here after recording. You can also edit it.",
+            key=f"voice_answer_{idx}",
+            value=st.session_state.get("voice_transcript_buffer", ""),
+            label_visibility="visible"
         )
 
     # Combine: prefer typed if both filled, else voice

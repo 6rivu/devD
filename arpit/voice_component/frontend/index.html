@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 4px; background: transparent;
+    }
+    .container { text-align: center; }
+    .btn {
+      padding: 10px 24px; border-radius: 24px; border: none;
+      cursor: pointer; font-size: 15px; font-weight: 600;
+      transition: all 0.2s; margin: 2px;
+    }
+    .btn-record { background: linear-gradient(135deg,#e94560,#c0392b); color: #fff; }
+    .btn-stop { background: linear-gradient(135deg,#2ecc71,#16a085); color: #fff; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 13px; color: #555; margin-top: 6px; min-height: 20px; }
+    #transcript {
+      margin-top: 6px; padding: 8px; border-radius: 8px;
+      background: #f8f9ff; border: 1px solid #dee2ff;
+      font-size: 14px; line-height: 1.4; min-height: 30px;
+      white-space: pre-wrap; text-align: left; word-wrap: break-word;
+    }
+    .pulse { animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <button class="btn btn-record" id="startBtn">🎙️ Start Speaking</button>
+    <button class="btn btn-stop" id="stopBtn" style="display:none">⏹️ Stop</button>
+    <div id="status">Click "Start Speaking" to begin</div>
+    <div id="transcript"></div>
+  </div>
+
+  <script>
+    (function() {
+      window.Streamlit = window.Streamlit || {};
+      window.Streamlit.setComponentReady = function() {
+        var attempts = 0;
+        function trySend() {
+          attempts++;
+          try {
+            window.parent.postMessage({
+              isStreamlitMessage: true,
+              type: 'setComponentReady'
+            }, '*');
+            return;
+          } catch(e) {}
+          if (attempts < 30) setTimeout(trySend, 100);
+        }
+        trySend();
+      };
+
+      window.Streamlit.setComponentValue = function(val) {
+        var attempts = 0;
+        function trySend() {
+          attempts++;
+          try {
+            window.parent.postMessage({
+              isStreamlitMessage: true,
+              type: 'setComponentValue',
+              value: val
+            }, '*');
+            return;
+          } catch(e) {}
+          if (attempts < 30) setTimeout(trySend, 100);
+        }
+        trySend();
+      };
+    })();
+
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const transcriptEl = document.getElementById('transcript');
+    const API_URL = 'http://localhost:8000/api/transcribe';
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let stream = null;
+
+    function sendValue(val) {
+      if (window.Streamlit && window.Streamlit.setComponentValue) {
+        window.Streamlit.setComponentValue(val);
+      }
+    }
+
+    window.Streamlit.setComponentReady();
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch(e) {
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+          statusEl.innerHTML = '❌ Microphone access denied. Allow mic in browser settings.';
+        } else {
+          statusEl.innerHTML = '❌ Mic error: ' + e.message;
+        }
+        return;
+      }
+
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg' });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+        stopBtn.style.display = 'none';
+        startBtn.style.display = 'inline-flex';
+        statusEl.innerHTML = '<span class="pulse" style="color:#e94560">⏳ Transcribing...</span>';
+
+        try {
+          const resp = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': blob.type },
+            body: blob
+          });
+          const data = await resp.json();
+          const txt = (data.transcript || '').trim();
+          if (txt) {
+            transcriptEl.textContent = txt;
+            transcriptEl.style.display = 'block';
+            statusEl.innerHTML = '✅ Done! Transcript captured.';
+            sendValue(txt);
+          } else {
+            statusEl.innerHTML = data.error ? 'Error: ' + data.error : 'No speech detected. Try again.';
+            transcriptEl.style.display = 'none';
+          }
+        } catch(e) {
+          statusEl.innerHTML = '❌ Transcription failed: ' + e.message;
+        }
+
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          stream = null;
+        }
+      };
+
+      mediaRecorder.onerror = () => {
+        statusEl.innerHTML = '❌ Recording error';
+        startBtn.style.display = 'inline-flex';
+        stopBtn.style.display = 'none';
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          stream = null;
+        }
+      };
+
+      transcriptEl.textContent = '';
+      transcriptEl.style.display = 'none';
+      startBtn.style.display = 'none';
+      stopBtn.style.display = 'inline-flex';
+      statusEl.innerHTML = '<span class="pulse" style="color:#e94560;font-weight:600">🔴 Recording... Speak now</span>';
+      mediaRecorder.start();
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    });
+  </script>
+</body>
+</html>

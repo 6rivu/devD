@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "CVolve Pro - Auto CV Generator",
+  "description": "Auto-generate ATS-optimized CVs on job pages using CVolve Pro.",
+  "version": "1.0",
+  "permissions": [
+    "storage",
+    "downloads",
+    "activeTab",
+    "scripting",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://cvolvepro.com/*",
+    "https://*.linkedin.com/*",
+    "https://*.indeed.com/*",
+    "https://*.glassdoor.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "128": "icon128.png"
+    }
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.linkedin.com/*",
+        "https://*.indeed.com/*",
+        "https://*.glassdoor.com/*"
+      ],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "128": "icon128.png"
+  },
+  "update_url": "https://cvolvepro.com/ext/update.xml"
+}

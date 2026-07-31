@@ -1,0 +1,46 @@
+# =============================================================================
+# CVOLVE PRO — Python dependencies
+# Python 3.10+ recommended (3.9 works but google-generativeai warns on EOL)
+# Install: pip install -r requirements.txt
+# =============================================================================
+
+# --- Web UI (Streamlit app: app.py) ---
+streamlit>=1.32.0,<2.0.0
+
+# --- REST API (api_server.py) ---
+fastapi>=0.110.0,<1.0.0
+uvicorn[standard]>=0.27.0,<1.0.0
+PyJWT>=2.8.0,<3.0.0
+
+# --- Database ---
+psycopg2-binary>=2.9.9,<3.0.0
+
+# --- Auth / security ---
+werkzeug>=3.0.0,<4.0.0
+
+# --- AI providers ---
+google-generativeai>=0.8.0,<1.0.0
+openai>=1.30.0,<2.0.0
+pydantic>=2.6.0,<3.0.0
+
+# --- Payments ---
+stripe>=8.0.0,<12.0.0
+
+# --- Email (OTP / notifications) ---
+resend>=2.0.0,<3.0.0
+
+# --- Document processing ---
+PyPDF2>=3.0.0,<4.0.0
+python-docx>=1.1.0,<2.0.0
+reportlab>=4.0.0,<5.0.0
+
+# --- Charts (analytics dashboard) ---
+plotly>=5.18.0,<6.0.0
+
+# --- Config / utilities ---
+python-dotenv>=1.0.0,<2.0.0
+phonenumbers>=8.13.0,<9.0.0
+pycountry>=24.0.0,<26.0.0
+
+# --- Optional: load Streamlit secrets.toml on servers without Python 3.11+ ---
+tomli>=2.0.0,<3.0.0; python_version < "3.11"

@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - JobsQA</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 50px 40px;
+            text-align: center;
+            animation: slideIn 0.6s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .success-icon {
+            width: 100px;
+            height: 100px;
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 30px;
+            animation: scaleIn 0.5s ease-out 0.2s both;
+        }
+
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+            }
+            to {
+                transform: scale(1);
+            }
+        }
+
+        .success-icon i {
+            color: white;
+            font-size: 50px;
+            animation: checkmark 0.8s ease-out 0.5s both;
+        }
+
+        @keyframes checkmark {
+            0% {
+                transform: scale(0) rotate(-45deg);
+                opacity: 0;
+            }
+            50% {
+                transform: scale(1.2) rotate(0deg);
+            }
+            100% {
+                transform: scale(1) rotate(0deg);
+                opacity: 1;
+            }
+        }
+
+        h1 {
+            color: #2d3748;
+            font-size: 36px;
+            margin-bottom: 15px;
+            font-weight: 700;
+            animation: fadeIn 0.6s ease-out 0.4s both;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .subtitle {
+            color: #718096;
+            font-size: 18px;
+            margin-bottom: 40px;
+            line-height: 1.6;
+            animation: fadeIn 0.6s ease-out 0.6s both;
+        }
+
+        .credits-box {
+            background: linear-gradient(135deg, #48bb7815 0%, #38a16915 100%);
+            border-radius: 15px;
+            padding: 40px 30px;
+            margin: 30px 0;
+            border: 2px solid #48bb7830;
+            animation: fadeIn 0.6s ease-out 0.8s both;
+        }
+
+        .credits-info {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 40px;
+            flex-wrap: wrap;
+        }
+
+        .credit-item {
+            text-align: center;
+        }
+
+        .credit-label {
+            color: #718096;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 12px;
+        }
+
+        .credit-value {
+            color: #48bb78;
+            font-size: 48px;
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .credit-value i {
+            font-size: 32px;
+        }
+
+        .divider {
+            width: 2px;
+            height: 60px;
+            background: linear-gradient(to bottom, transparent, #e2e8f0, transparent);
+        }
+
+        .info-box {
+            background: #f7fafc;
+            border-left: 4px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+            text-align: left;
+            animation: fadeIn 0.6s ease-out 1s both;
+        }
+
+        .info-box p {
+            color: #4a5568;
+            line-height: 1.8;
+            margin: 8px 0;
+        }
+
+        .info-box i {
+            color: #667eea;
+            margin-right: 10px;
+            width: 20px;
+        }
+
+        .btn-dashboard {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 18px 60px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 18px;
+            margin-top: 30px;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+            animation: fadeIn 0.6s ease-out 1.2s both;
+        }
+
+        .btn-dashboard:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 35px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn-dashboard i {
+            margin-left: 10px;
+            transition: transform 0.3s ease;
+        }
+
+        .btn-dashboard:hover i {
+            transform: translateX(5px);
+        }
+
+        .processing-note {
+            background: #fff5e6;
+            border: 1px solid #ffd699;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            font-size: 14px;
+            color: #8b6914;
+            display: none;
+            animation: fadeIn 0.6s ease-out;
+        }
+
+        .processing-note i {
+            margin-right: 8px;
+            color: #ff9800;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 30px 20px;
+            }
+
+            h1 {
+                font-size: 28px;
+            }
+
+            .subtitle {
+                font-size: 16px;
+            }
+
+            .credit-value {
+                font-size: 36px;
+            }
+
+            .credits-info {
+                flex-direction: column;
+                gap: 30px;
+            }
+
+            .divider {
+                width: 100%;
+                height: 2px;
+                background: linear-gradient(to right, transparent, #e2e8f0, transparent);
+            }
+
+            .btn-dashboard {
+                padding: 16px 40px;
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">
+            <i class="fas fa-check"></i>
+        </div>
+        
+        <h1>🎉 Payment Successful!</h1>
+        <p class="subtitle">
+            Thank you for your purchase! Your transaction has been completed successfully.
+        </p>
+
+        <div class="credits-box">
+            <div class="credits-info">
+                <div class="credit-item">
+                    <div class="credit-label">Credits Added</div>
+                    <div class="credit-value">
+                        <i class="fas fa-plus-circle"></i>
+                        <span id="credits-added">60</span>
+                    </div>
+                </div>
+                
+                <div class="divider"></div>
+                
+                <div class="credit-item">
+                    <div class="credit-label">Available Now</div>
+                    <div class="credit-value">
+                        <i class="fas fa-coins"></i>
+                        <span id="total-credits">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="processing-note" id="processing-note">
+            <i class="fas fa-info-circle"></i>
+            <strong>Processing:</strong> Your credits are being added to your account. This may take a few moments.
+        </div>
+
+        <div class="info-box">
+            <p><i class="fas fa-check-circle"></i> Payment processed successfully</p>
+            <p><i class="fas fa-shield-alt"></i> Your transaction is secure and encrypted</p>
+            <p><i class="fas fa-envelope"></i> A receipt has been sent to your email</p>
+            <p><i class="fas fa-clock"></i> Credits are valid for 30 days</p>
+        </div>
+
+        <a href="/dashboard.html" class="btn-dashboard" id="dashboard-btn">
+            Go to Dashboard <i class="fas fa-arrow-right"></i>
+        </a>
+
+        <p style="margin-top: 25px; color: #a0aec0; font-size: 13px;">
+            Transaction ID: <span id="session-id" style="color: #718096; font-weight: 600;">Loading...</span>
+        </p>
+    </div>
+
+    <script>
+        // Always show success immediately
+        console.log('Payment success page loaded');
+
+        // Get session ID from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionId = urlParams.get('session_id');
+
+        // Display session ID if available
+        if (sessionId) {
+            document.getElementById('session-id').textContent = sessionId.substring(0, 30) + '...';
+        } else {
+            document.getElementById('session-id').textContent = 'Completed';
+        }
+
+        // Animate the credits number
+        function animateNumber(elementId, targetValue) {
+            const element = document.getElementById(elementId);
+            let currentValue = 0;
+            const increment = targetValue / 30;
+            const stepTime = 30;
+
+            const timer = setInterval(() => {
+                currentValue += increment;
+                if (currentValue >= targetValue) {
+                    element.textContent = targetValue;
+                    clearInterval(timer);
+                } else {
+                    element.textContent = Math.floor(currentValue);
+                }
+            }, stepTime);
+        }
+
+        // Start animation after a short delay
+        setTimeout(() => {
+            animateNumber('credits-added', 60);
+        }, 800);
+
+        // Try to get actual credit info from backend (optional, non-blocking)
+        const token = localStorage.getItem('jobsqa_token');
+        
+        if (token && sessionId) {
+            // Show processing note
+            document.getElementById('processing-note').style.display = 'block';
+
+            fetch('https://jobsqa.com/api/jobsqa/confirm-payment', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Backend response:', data);
+                
+                // Hide processing note
+                document.getElementById('processing-note').style.display = 'none';
+
+                if (data.success && data.total_credits) {
+                    // Update with actual values
+                    document.getElementById('credits-added').textContent = data.credits_added || 60;
+                    document.getElementById('total-credits').textContent = data.total_credits;
+                } else {
+                    // Show loading state
+                    document.getElementById('total-credits').textContent = '60+';
+                }
+            })
+            .catch(error => {
+                console.log('Could not fetch credits (non-critical):', error);
+                // Hide processing note
+                document.getElementById('processing-note').style.display = 'none';
+                // Still show success with default values
+                document.getElementById('total-credits').textContent = '60+';
+            });
+        } else {
+            // No token or session - just show success with default
+            document.getElementById('total-credits').textContent = '60+';
+        }
+
+        // Confetti effect (optional fun addition!)
+        function createConfetti() {
+            const colors = ['#667eea', '#764ba2', '#48bb78', '#38a169', '#f6ad55'];
+            for (let i = 0; i < 50; i++) {
+                setTimeout(() => {
+                    const confetti = document.createElement('div');
+                    confetti.style.position = 'fixed';
+                    confetti.style.width = '10px';
+                    confetti.style.height = '10px';
+                    confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                    confetti.style.left = Math.random() * 100 + '%';
+                    confetti.style.top = '-10px';
+                    confetti.style.opacity = '1';
+                    confetti.style.borderRadius = '50%';
+                    confetti.style.pointerEvents = 'none';
+                    confetti.style.zIndex = '9999';
+                    document.body.appendChild(confetti);
+
+                    const duration = Math.random() * 3 + 2;
+                    const rotation = Math.random() * 360;
+                    
+                    confetti.animate([
+                        { transform: 'translateY(0) rotate(0deg)', opacity: 1 },
+                        { transform: `translateY(${window.innerHeight + 10}px) rotate(${rotation}deg)`, opacity: 0 }
+                    ], {
+                        duration: duration * 1000,
+                        easing: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+                    });
+
+                    setTimeout(() => confetti.remove(), duration * 1000);
+                }, i * 30);
+            }
+        }
+
+        // Trigger confetti after page loads
+        setTimeout(createConfetti, 600);
+    </script>
+</body>
+</html>
